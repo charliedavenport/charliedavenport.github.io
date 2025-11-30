@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/app.scss"],
+  "sourcesContent": ["main {\n    width: 100%;\n    min-height: 100%;\n    padding: 1rem;\n    box-sizing: inherit;\n}\n\nh1 {\n    font-size: 3.125rem;\n    color: var(--gray-900);\n    font-weight: 500;\n    line-height: 100%;\n    letter-spacing: -0.125rem;\n    margin: 0;\n    text-align: center;\n    font-family: \"Inter Tight\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto,\n      Helvetica, Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\",\n      \"Segoe UI Symbol\";\n  }\n\n.subtitle {\n    margin: 0;\n    color: var(--gray-700);\n    text-align: center;\n    font-family: \"Inter Tight\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto,\n      Helvetica, Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\",\n      \"Segoe UI Symbol\";\n}"],
+  "mappings": ";AAAA;AACI,SAAA;AACA,cAAA;AACA,WAAA;AACA,cAAA;;AAGJ;AACI,aAAA;AACA,SAAA,IAAA;AACA,eAAA;AACA,eAAA;AACA,kBAAA;AACA,UAAA;AACA,cAAA;AACA;IAAA,aAAA;IAAA,aAAA;IAAA,kBAAA;IAAA,UAAA;IAAA,MAAA;IAAA,SAAA;IAAA,KAAA;IAAA,UAAA;IAAA,mBAAA;IAAA,gBAAA;IAAA;;AAKJ,CAAA;AACI,UAAA;AACA,SAAA,IAAA;AACA,cAAA;AACA;IAAA,aAAA;IAAA,aAAA;IAAA,kBAAA;IAAA,UAAA;IAAA,MAAA;IAAA,SAAA;IAAA,KAAA;IAAA,UAAA;IAAA,mBAAA;IAAA,gBAAA;IAAA;;",
+  "names": []
+}

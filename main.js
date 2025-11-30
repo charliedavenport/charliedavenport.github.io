@@ -33907,36 +33907,73 @@ var appConfig = {
   ]
 };
 
+// src/app/face-card/face-card.ts
+var FaceCard = class _FaceCard {
+  imagePath;
+  static \u0275fac = function FaceCard_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _FaceCard)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _FaceCard, selectors: [["app-face-card"]], inputs: { imagePath: "imagePath" }, decls: 2, vars: 1, consts: [[1, "face-div"], ["width", "313", "height", "342", "alt", "selfie", 1, "face-img", 3, "ngSrc"]], template: function FaceCard_Template(rf, ctx) {
+    if (rf & 1) {
+      \u0275\u0275elementStart(0, "div", 0);
+      \u0275\u0275element(1, "img", 1);
+      \u0275\u0275elementEnd();
+    }
+    if (rf & 2) {
+      \u0275\u0275advance();
+      \u0275\u0275property("ngSrc", ctx.imagePath);
+    }
+  }, dependencies: [NgOptimizedImage], styles: ["\n\n.face-img[_ngcontent-%COMP%] {\n  border-radius: 25px;\n}\n.face-div[_ngcontent-%COMP%] {\n  border-radius: 29px;\n  border: 5px solid #000000;\n  padding: 0px;\n  width: 313px;\n  height: 342px;\n}\n/*# sourceMappingURL=face-card.css.map */"] });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(FaceCard, [{
+    type: Component,
+    args: [{ selector: "app-face-card", imports: [NgOptimizedImage], template: `
+    <div class="face-div">
+      <img class="face-img" [ngSrc]="imagePath" width="313" height="342" alt='selfie'>
+    </div>
+  `, styles: ["/* src/app/face-card/face-card.scss */\n.face-img {\n  border-radius: 25px;\n}\n.face-div {\n  border-radius: 29px;\n  border: 5px solid #000000;\n  padding: 0px;\n  width: 313px;\n  height: 342px;\n}\n/*# sourceMappingURL=face-card.css.map */\n"] }]
+  }], null, { imagePath: [{
+    type: Input
+  }] });
+})();
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(FaceCard, { className: "FaceCard", filePath: "src/app/face-card/face-card.ts", lineNumber: 15 });
+})();
+
 // src/app/app.component.ts
 var AppComponent = class _AppComponent {
-  title = signal("personal-site", __spreadValues({}, ngDevMode ? { debugName: "title" } : {}));
+  faceImagePath = "PXL_20241115_225128016.jpg";
   static \u0275fac = function AppComponent_Factory(__ngFactoryType__) {
     return new (__ngFactoryType__ || _AppComponent)();
   };
-  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _AppComponent, selectors: [["app-root"]], decls: 7, vars: 1, consts: [[1, "main"], [1, "content"]], template: function AppComponent_Template(rf, ctx) {
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _AppComponent, selectors: [["app-root"]], decls: 9, vars: 1, consts: [[1, "main"], [1, "subtitle"], [3, "imagePath"]], template: function AppComponent_Template(rf, ctx) {
     if (rf & 1) {
-      \u0275\u0275elementStart(0, "main", 0)(1, "div", 1)(2, "h1");
-      \u0275\u0275text(3);
+      \u0275\u0275elementStart(0, "main", 0)(1, "header")(2, "h1");
+      \u0275\u0275text(3, "Charlie Davenport");
       \u0275\u0275elementEnd();
-      \u0275\u0275elementStart(4, "p");
-      \u0275\u0275text(5, "hello, world!");
-      \u0275\u0275elementEnd()()();
-      \u0275\u0275element(6, "router-outlet");
+      \u0275\u0275elementStart(4, "p", 1);
+      \u0275\u0275text(5, "Software Developer");
+      \u0275\u0275elementEnd()();
+      \u0275\u0275elementStart(6, "section");
+      \u0275\u0275element(7, "app-face-card", 2);
+      \u0275\u0275elementEnd()();
+      \u0275\u0275element(8, "router-outlet");
     }
     if (rf & 2) {
-      \u0275\u0275advance(3);
-      \u0275\u0275textInterpolate(ctx.title());
+      \u0275\u0275advance(7);
+      \u0275\u0275property("imagePath", ctx.faceImagePath);
     }
-  }, dependencies: [RouterOutlet], encapsulation: 2 });
+  }, dependencies: [RouterOutlet, FaceCard], styles: ['\n\nmain[_ngcontent-%COMP%] {\n  width: 100%;\n  min-height: 100%;\n  padding: 1rem;\n  box-sizing: inherit;\n}\nh1[_ngcontent-%COMP%] {\n  font-size: 3.125rem;\n  color: var(--gray-900);\n  font-weight: 500;\n  line-height: 100%;\n  letter-spacing: -0.125rem;\n  margin: 0;\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.subtitle[_ngcontent-%COMP%] {\n  margin: 0;\n  color: var(--gray-700);\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n/*# sourceMappingURL=app.css.map */'] });
 };
 (() => {
   (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(AppComponent, [{
     type: Component,
-    args: [{ selector: "app-root", imports: [RouterOutlet], template: '<main class="main">\n  <div class="content">\n    <h1>{{ title() }}</h1>\n    <p>hello, world!</p>\n  </div>\n</main>\n\n<router-outlet />\n' }]
+    args: [{ selector: "app-root", imports: [RouterOutlet, FaceCard], template: '<main class="main">\n  <header>\n    <h1>Charlie Davenport</h1>\n    <p class="subtitle">Software Developer</p>\n  </header>\n    \n  <section>\n    <app-face-card [imagePath]="faceImagePath"></app-face-card>\n  </section>\n</main>\n\n<router-outlet />\n', styles: ['/* src/app/app.scss */\nmain {\n  width: 100%;\n  min-height: 100%;\n  padding: 1rem;\n  box-sizing: inherit;\n}\nh1 {\n  font-size: 3.125rem;\n  color: var(--gray-900);\n  font-weight: 500;\n  line-height: 100%;\n  letter-spacing: -0.125rem;\n  margin: 0;\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.subtitle {\n  margin: 0;\n  color: var(--gray-700);\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n/*# sourceMappingURL=app.css.map */\n'] }]
   }], null, null);
 })();
 (() => {
-  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(AppComponent, { className: "AppComponent", filePath: "src/app/app.component.ts", lineNumber: 10 });
+  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(AppComponent, { className: "AppComponent", filePath: "src/app/app.component.ts", lineNumber: 11 });
 })();
 
 // src/main.ts
