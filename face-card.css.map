@@ -1,7 +1,7 @@
 {
   "version": 3,
   "sources": ["src/app/face-card/face-card.scss"],
-  "sourcesContent": [".face-img  {\n    border-radius: 25px;\n}\n\n.face-div {\n  border-radius: 29px;\n  border: 5px solid #000000;\n  padding: 0px;\n  width: 313px;\n  height: 342px;\n}"],
-  "mappings": ";AAAA,CAAA;AACI,iBAAA;;AAGJ,CAAA;AACE,iBAAA;AACA,UAAA,IAAA,MAAA;AACA,WAAA;AACA,SAAA;AACA,UAAA;;",
+  "sourcesContent": [".face-card {\n  max-width: 300px;\n  border-width: 2px;\n}\n\n.face-img  {\n    border-radius: 23px;\n}\n\n.face-div {\n  border-radius: 29px;\n  border: 5px solid #000000;\n  padding: 0px;\n  width: 313px;\n  height: 342px;\n}"],
+  "mappings": ";AAAA,CAAA;AACE,aAAA;AACA,gBAAA;;AAGF,CAAA;AACI,iBAAA;;AAGJ,CAAA;AACE,iBAAA;AACA,UAAA,IAAA,MAAA;AACA,WAAA;AACA,SAAA;AACA,UAAA;;",
   "names": []
 }
