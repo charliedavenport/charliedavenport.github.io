@@ -2231,6 +2231,40 @@ function defer(observableFactory) {
   });
 }
 
+// node_modules/rxjs/dist/esm/internal/observable/forkJoin.js
+function forkJoin(...args) {
+  const resultSelector = popResultSelector(args);
+  const { args: sources, keys } = argsArgArrayOrObject(args);
+  const result = new Observable((subscriber) => {
+    const { length } = sources;
+    if (!length) {
+      subscriber.complete();
+      return;
+    }
+    const values = new Array(length);
+    let remainingCompletions = length;
+    let remainingEmissions = length;
+    for (let sourceIndex = 0; sourceIndex < length; sourceIndex++) {
+      let hasValue = false;
+      innerFrom(sources[sourceIndex]).subscribe(createOperatorSubscriber(subscriber, (value) => {
+        if (!hasValue) {
+          hasValue = true;
+          remainingEmissions--;
+        }
+        values[sourceIndex] = value;
+      }, () => remainingCompletions--, void 0, () => {
+        if (!remainingCompletions || !hasValue) {
+          if (!remainingEmissions) {
+            subscriber.next(keys ? createObject(keys, values) : values);
+          }
+          subscriber.complete();
+        }
+      }));
+    }
+  });
+  return resultSelector ? result.pipe(mapOneOrManyArgs(resultSelector)) : result;
+}
+
 // node_modules/rxjs/dist/esm/internal/observable/timer.js
 function timer(dueTime = 0, intervalOrScheduler, scheduler = async) {
   let intervalDuration = -1;
@@ -2680,6 +2714,83 @@ var NOT_FOUND = Symbol("NotFound");
 function isNotFound(e) {
   return e === NOT_FOUND || e?.name === "\u0275NotFound";
 }
+
+// node_modules/@angular/core/fesm2022/_linked_signal-chunk.mjs
+function createLinkedSignal(sourceFn, computationFn, equalityFn) {
+  const node = Object.create(LINKED_SIGNAL_NODE);
+  node.source = sourceFn;
+  node.computation = computationFn;
+  if (equalityFn != void 0) {
+    node.equal = equalityFn;
+  }
+  const linkedSignalGetter = () => {
+    producerUpdateValueVersion(node);
+    producerAccessed(node);
+    if (node.value === ERRORED) {
+      throw node.error;
+    }
+    return node.value;
+  };
+  const getter = linkedSignalGetter;
+  getter[SIGNAL] = node;
+  if (typeof ngDevMode !== "undefined" && ngDevMode) {
+    const debugName = node.debugName ? " (" + node.debugName + ")" : "";
+    getter.toString = () => `[LinkedSignal${debugName}: ${node.value}]`;
+  }
+  runPostProducerCreatedFn(node);
+  return getter;
+}
+function linkedSignalSetFn(node, newValue) {
+  producerUpdateValueVersion(node);
+  signalSetFn(node, newValue);
+  producerMarkClean(node);
+}
+function linkedSignalUpdateFn(node, updater) {
+  producerUpdateValueVersion(node);
+  signalUpdateFn(node, updater);
+  producerMarkClean(node);
+}
+var LINKED_SIGNAL_NODE = /* @__PURE__ */ (() => {
+  return __spreadProps(__spreadValues({}, REACTIVE_NODE), {
+    value: UNSET,
+    dirty: true,
+    error: null,
+    equal: defaultEquals,
+    kind: "linkedSignal",
+    producerMustRecompute(node) {
+      return node.value === UNSET || node.value === COMPUTING;
+    },
+    producerRecomputeValue(node) {
+      if (node.value === COMPUTING) {
+        throw new Error(typeof ngDevMode !== "undefined" && ngDevMode ? "Detected cycle in computations." : "");
+      }
+      const oldValue = node.value;
+      node.value = COMPUTING;
+      const prevConsumer = consumerBeforeComputation(node);
+      let newValue;
+      try {
+        const newSourceValue = node.source();
+        const prev = oldValue === UNSET || oldValue === ERRORED ? void 0 : {
+          source: node.sourceValue,
+          value: oldValue
+        };
+        newValue = node.computation(newSourceValue, prev);
+        node.sourceValue = newSourceValue;
+      } catch (err) {
+        newValue = ERRORED;
+        node.error = err;
+      } finally {
+        consumerAfterComputation(node, prevConsumer);
+      }
+      if (oldValue !== UNSET && newValue !== ERRORED && node.equal(oldValue, newValue)) {
+        node.value = oldValue;
+        return;
+      }
+      node.value = newValue;
+      node.version++;
+    }
+  });
+})();
 
 // node_modules/@angular/core/fesm2022/primitives-signals.mjs
 var formatter = {
@@ -22096,6 +22207,279 @@ function computed(computation, options) {
   }
   return getter;
 }
+var identityFn = (v) => v;
+function linkedSignal(optionsOrComputation, options) {
+  if (typeof optionsOrComputation === "function") {
+    const getter = createLinkedSignal(optionsOrComputation, identityFn, options?.equal);
+    return upgradeLinkedSignalGetter(getter, options?.debugName);
+  } else {
+    const getter = createLinkedSignal(optionsOrComputation.source, optionsOrComputation.computation, optionsOrComputation.equal);
+    return upgradeLinkedSignalGetter(getter, optionsOrComputation.debugName);
+  }
+}
+function upgradeLinkedSignalGetter(getter, debugName) {
+  if (ngDevMode) {
+    getter.toString = () => `[LinkedSignal: ${getter()}]`;
+    getter[SIGNAL].debugName = debugName;
+  }
+  const node = getter[SIGNAL];
+  const upgradedGetter = getter;
+  upgradedGetter.set = (newValue) => linkedSignalSetFn(node, newValue);
+  upgradedGetter.update = (updateFn) => linkedSignalUpdateFn(node, updateFn);
+  upgradedGetter.asReadonly = signalAsReadonlyFn.bind(getter);
+  return upgradedGetter;
+}
+var BaseWritableResource = class {
+  value;
+  isLoading;
+  constructor(value, debugName) {
+    this.value = value;
+    this.value.set = this.set.bind(this);
+    this.value.update = this.update.bind(this);
+    this.value.asReadonly = signalAsReadonlyFn;
+    this.isLoading = computed(() => this.status() === "loading" || this.status() === "reloading", ngDevMode ? createDebugNameObject(debugName, "isLoading") : void 0);
+  }
+  isError = computed(() => this.status() === "error");
+  update(updateFn) {
+    this.set(updateFn(untracked2(this.value)));
+  }
+  isValueDefined = computed(() => {
+    if (this.isError()) {
+      return false;
+    }
+    return this.value() !== void 0;
+  });
+  hasValue() {
+    return this.isValueDefined();
+  }
+  asReadonly() {
+    return this;
+  }
+};
+var ResourceImpl = class extends BaseWritableResource {
+  loaderFn;
+  equal;
+  debugName;
+  pendingTasks;
+  state;
+  extRequest;
+  effectRef;
+  pendingController;
+  resolvePendingTask = void 0;
+  destroyed = false;
+  unregisterOnDestroy;
+  status;
+  error;
+  constructor(request, loaderFn, defaultValue, equal, debugName, injector) {
+    super(computed(() => {
+      const streamValue = this.state().stream?.();
+      if (!streamValue) {
+        return defaultValue;
+      }
+      if (this.state().status === "loading" && this.error()) {
+        return defaultValue;
+      }
+      if (!isResolved(streamValue)) {
+        throw new ResourceValueError(this.error());
+      }
+      return streamValue.value;
+    }, __spreadValues({
+      equal
+    }, ngDevMode ? createDebugNameObject(debugName, "value") : void 0)), debugName);
+    this.loaderFn = loaderFn;
+    this.equal = equal;
+    this.debugName = debugName;
+    this.extRequest = linkedSignal(__spreadValues({
+      source: request,
+      computation: (request2) => ({
+        request: request2,
+        reload: 0
+      })
+    }, ngDevMode ? createDebugNameObject(debugName, "extRequest") : void 0));
+    this.state = linkedSignal(__spreadValues({
+      source: this.extRequest,
+      computation: (extRequest, previous) => {
+        const status = extRequest.request === void 0 ? "idle" : "loading";
+        if (!previous) {
+          return {
+            extRequest,
+            status,
+            previousStatus: "idle",
+            stream: void 0
+          };
+        } else {
+          return {
+            extRequest,
+            status,
+            previousStatus: projectStatusOfState(previous.value),
+            stream: previous.value.extRequest.request === extRequest.request ? previous.value.stream : void 0
+          };
+        }
+      }
+    }, ngDevMode ? createDebugNameObject(debugName, "state") : void 0));
+    this.effectRef = effect(this.loadEffect.bind(this), __spreadValues({
+      injector,
+      manualCleanup: true
+    }, ngDevMode ? createDebugNameObject(debugName, "loadEffect") : void 0));
+    this.pendingTasks = injector.get(PendingTasks);
+    this.unregisterOnDestroy = injector.get(DestroyRef).onDestroy(() => this.destroy());
+    this.status = computed(() => projectStatusOfState(this.state()), ngDevMode ? createDebugNameObject(debugName, "status") : void 0);
+    this.error = computed(() => {
+      const stream = this.state().stream?.();
+      return stream && !isResolved(stream) ? stream.error : void 0;
+    }, ngDevMode ? createDebugNameObject(debugName, "error") : void 0);
+  }
+  set(value) {
+    if (this.destroyed) {
+      return;
+    }
+    const error = untracked2(this.error);
+    const state = untracked2(this.state);
+    if (!error) {
+      const current = untracked2(this.value);
+      if (state.status === "local" && (this.equal ? this.equal(current, value) : current === value)) {
+        return;
+      }
+    }
+    this.state.set({
+      extRequest: state.extRequest,
+      status: "local",
+      previousStatus: "local",
+      stream: signal({
+        value
+      }, ngDevMode ? createDebugNameObject(this.debugName, "stream") : void 0)
+    });
+    this.abortInProgressLoad();
+  }
+  reload() {
+    const {
+      status
+    } = untracked2(this.state);
+    if (status === "idle" || status === "loading") {
+      return false;
+    }
+    this.extRequest.update(({
+      request,
+      reload
+    }) => ({
+      request,
+      reload: reload + 1
+    }));
+    return true;
+  }
+  destroy() {
+    this.destroyed = true;
+    this.unregisterOnDestroy();
+    this.effectRef.destroy();
+    this.abortInProgressLoad();
+    this.state.set({
+      extRequest: {
+        request: void 0,
+        reload: 0
+      },
+      status: "idle",
+      previousStatus: "idle",
+      stream: void 0
+    });
+  }
+  async loadEffect() {
+    const extRequest = this.extRequest();
+    const {
+      status: currentStatus,
+      previousStatus
+    } = untracked2(this.state);
+    if (extRequest.request === void 0) {
+      return;
+    } else if (currentStatus !== "loading") {
+      return;
+    }
+    this.abortInProgressLoad();
+    let resolvePendingTask = this.resolvePendingTask = this.pendingTasks.add();
+    const {
+      signal: abortSignal
+    } = this.pendingController = new AbortController();
+    try {
+      const stream = await untracked2(() => {
+        return this.loaderFn({
+          params: extRequest.request,
+          request: extRequest.request,
+          abortSignal,
+          previous: {
+            status: previousStatus
+          }
+        });
+      });
+      if (abortSignal.aborted || untracked2(this.extRequest) !== extRequest) {
+        return;
+      }
+      this.state.set({
+        extRequest,
+        status: "resolved",
+        previousStatus: "resolved",
+        stream
+      });
+    } catch (err) {
+      if (abortSignal.aborted || untracked2(this.extRequest) !== extRequest) {
+        return;
+      }
+      this.state.set({
+        extRequest,
+        status: "resolved",
+        previousStatus: "error",
+        stream: signal({
+          error: encapsulateResourceError(err)
+        }, ngDevMode ? createDebugNameObject(this.debugName, "stream") : void 0)
+      });
+    } finally {
+      resolvePendingTask?.();
+      resolvePendingTask = void 0;
+    }
+  }
+  abortInProgressLoad() {
+    untracked2(() => this.pendingController?.abort());
+    this.pendingController = void 0;
+    this.resolvePendingTask?.();
+    this.resolvePendingTask = void 0;
+  }
+};
+function projectStatusOfState(state) {
+  switch (state.status) {
+    case "loading":
+      return state.extRequest.reload === 0 ? "loading" : "reloading";
+    case "resolved":
+      return isResolved(state.stream()) ? "resolved" : "error";
+    default:
+      return state.status;
+  }
+}
+function isResolved(state) {
+  return state.error === void 0;
+}
+function createDebugNameObject(resourceDebugName, internalSignalDebugName) {
+  return {
+    debugName: `Resource${resourceDebugName ? "#" + resourceDebugName : ""}.${internalSignalDebugName}`
+  };
+}
+function encapsulateResourceError(error) {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new ResourceWrappedError(error);
+}
+var ResourceValueError = class extends Error {
+  constructor(error) {
+    super(ngDevMode ? `Resource is currently in an error state (see Error.cause for details): ${error.message}` : error.message, {
+      cause: error
+    });
+  }
+};
+var ResourceWrappedError = class extends Error {
+  constructor(error) {
+    super(ngDevMode ? `Resource returned an error that's not an Error instance: ${String(error)}. Check this error's .cause for the actual error.` : String(error), {
+      cause: error
+    });
+  }
+};
 
 // node_modules/@angular/core/fesm2022/core.mjs
 var REQUIRED_UNSET_VALUE = /* @__PURE__ */ Symbol("InputSignalNode#UNSET");
@@ -29104,6 +29488,2126 @@ var BrowserModule = class _BrowserModule {
   }], () => [], null);
 })();
 
+// node_modules/@angular/common/fesm2022/_module-chunk.mjs
+var HttpHeaders = class _HttpHeaders {
+  headers;
+  normalizedNames = /* @__PURE__ */ new Map();
+  lazyInit;
+  lazyUpdate = null;
+  constructor(headers) {
+    if (!headers) {
+      this.headers = /* @__PURE__ */ new Map();
+    } else if (typeof headers === "string") {
+      this.lazyInit = () => {
+        this.headers = /* @__PURE__ */ new Map();
+        headers.split("\n").forEach((line) => {
+          const index = line.indexOf(":");
+          if (index > 0) {
+            const name = line.slice(0, index);
+            const value = line.slice(index + 1).trim();
+            this.addHeaderEntry(name, value);
+          }
+        });
+      };
+    } else if (typeof Headers !== "undefined" && headers instanceof Headers) {
+      this.headers = /* @__PURE__ */ new Map();
+      headers.forEach((value, name) => {
+        this.addHeaderEntry(name, value);
+      });
+    } else {
+      this.lazyInit = () => {
+        if (typeof ngDevMode === "undefined" || ngDevMode) {
+          assertValidHeaders(headers);
+        }
+        this.headers = /* @__PURE__ */ new Map();
+        Object.entries(headers).forEach(([name, values]) => {
+          this.setHeaderEntries(name, values);
+        });
+      };
+    }
+  }
+  has(name) {
+    this.init();
+    return this.headers.has(name.toLowerCase());
+  }
+  get(name) {
+    this.init();
+    const values = this.headers.get(name.toLowerCase());
+    return values && values.length > 0 ? values[0] : null;
+  }
+  keys() {
+    this.init();
+    return Array.from(this.normalizedNames.values());
+  }
+  getAll(name) {
+    this.init();
+    return this.headers.get(name.toLowerCase()) || null;
+  }
+  append(name, value) {
+    return this.clone({
+      name,
+      value,
+      op: "a"
+    });
+  }
+  set(name, value) {
+    return this.clone({
+      name,
+      value,
+      op: "s"
+    });
+  }
+  delete(name, value) {
+    return this.clone({
+      name,
+      value,
+      op: "d"
+    });
+  }
+  maybeSetNormalizedName(name, lcName) {
+    if (!this.normalizedNames.has(lcName)) {
+      this.normalizedNames.set(lcName, name);
+    }
+  }
+  init() {
+    if (!!this.lazyInit) {
+      if (this.lazyInit instanceof _HttpHeaders) {
+        this.copyFrom(this.lazyInit);
+      } else {
+        this.lazyInit();
+      }
+      this.lazyInit = null;
+      if (!!this.lazyUpdate) {
+        this.lazyUpdate.forEach((update) => this.applyUpdate(update));
+        this.lazyUpdate = null;
+      }
+    }
+  }
+  copyFrom(other) {
+    other.init();
+    Array.from(other.headers.keys()).forEach((key) => {
+      this.headers.set(key, other.headers.get(key));
+      this.normalizedNames.set(key, other.normalizedNames.get(key));
+    });
+  }
+  clone(update) {
+    const clone = new _HttpHeaders();
+    clone.lazyInit = !!this.lazyInit && this.lazyInit instanceof _HttpHeaders ? this.lazyInit : this;
+    clone.lazyUpdate = (this.lazyUpdate || []).concat([update]);
+    return clone;
+  }
+  applyUpdate(update) {
+    const key = update.name.toLowerCase();
+    switch (update.op) {
+      case "a":
+      case "s":
+        let value = update.value;
+        if (typeof value === "string") {
+          value = [value];
+        }
+        if (value.length === 0) {
+          return;
+        }
+        this.maybeSetNormalizedName(update.name, key);
+        const base = (update.op === "a" ? this.headers.get(key) : void 0) || [];
+        base.push(...value);
+        this.headers.set(key, base);
+        break;
+      case "d":
+        const toDelete = update.value;
+        if (!toDelete) {
+          this.headers.delete(key);
+          this.normalizedNames.delete(key);
+        } else {
+          let existing = this.headers.get(key);
+          if (!existing) {
+            return;
+          }
+          existing = existing.filter((value2) => toDelete.indexOf(value2) === -1);
+          if (existing.length === 0) {
+            this.headers.delete(key);
+            this.normalizedNames.delete(key);
+          } else {
+            this.headers.set(key, existing);
+          }
+        }
+        break;
+    }
+  }
+  addHeaderEntry(name, value) {
+    const key = name.toLowerCase();
+    this.maybeSetNormalizedName(name, key);
+    if (this.headers.has(key)) {
+      this.headers.get(key).push(value);
+    } else {
+      this.headers.set(key, [value]);
+    }
+  }
+  setHeaderEntries(name, values) {
+    const headerValues = (Array.isArray(values) ? values : [values]).map((value) => value.toString());
+    const key = name.toLowerCase();
+    this.headers.set(key, headerValues);
+    this.maybeSetNormalizedName(name, key);
+  }
+  forEach(fn) {
+    this.init();
+    Array.from(this.normalizedNames.keys()).forEach((key) => fn(this.normalizedNames.get(key), this.headers.get(key)));
+  }
+};
+function assertValidHeaders(headers) {
+  for (const [key, value] of Object.entries(headers)) {
+    if (!(typeof value === "string" || typeof value === "number") && !Array.isArray(value)) {
+      throw new Error(`Unexpected value of the \`${key}\` header provided. Expecting either a string, a number or an array, but got: \`${value}\`.`);
+    }
+  }
+}
+var HttpContext = class {
+  map = /* @__PURE__ */ new Map();
+  set(token, value) {
+    this.map.set(token, value);
+    return this;
+  }
+  get(token) {
+    if (!this.map.has(token)) {
+      this.map.set(token, token.defaultValue());
+    }
+    return this.map.get(token);
+  }
+  delete(token) {
+    this.map.delete(token);
+    return this;
+  }
+  has(token) {
+    return this.map.has(token);
+  }
+  keys() {
+    return this.map.keys();
+  }
+};
+var HttpUrlEncodingCodec = class {
+  encodeKey(key) {
+    return standardEncoding(key);
+  }
+  encodeValue(value) {
+    return standardEncoding(value);
+  }
+  decodeKey(key) {
+    return decodeURIComponent(key);
+  }
+  decodeValue(value) {
+    return decodeURIComponent(value);
+  }
+};
+function paramParser(rawParams, codec) {
+  const map2 = /* @__PURE__ */ new Map();
+  if (rawParams.length > 0) {
+    const params = rawParams.replace(/^\?/, "").split("&");
+    params.forEach((param) => {
+      const eqIdx = param.indexOf("=");
+      const [key, val] = eqIdx == -1 ? [codec.decodeKey(param), ""] : [codec.decodeKey(param.slice(0, eqIdx)), codec.decodeValue(param.slice(eqIdx + 1))];
+      const list = map2.get(key) || [];
+      list.push(val);
+      map2.set(key, list);
+    });
+  }
+  return map2;
+}
+var STANDARD_ENCODING_REGEX = /%(\d[a-f0-9])/gi;
+var STANDARD_ENCODING_REPLACEMENTS = {
+  "40": "@",
+  "3A": ":",
+  "24": "$",
+  "2C": ",",
+  "3B": ";",
+  "3D": "=",
+  "3F": "?",
+  "2F": "/"
+};
+function standardEncoding(v) {
+  return encodeURIComponent(v).replace(STANDARD_ENCODING_REGEX, (s, t) => STANDARD_ENCODING_REPLACEMENTS[t] ?? s);
+}
+function valueToString(value) {
+  return `${value}`;
+}
+var HttpParams = class _HttpParams {
+  map;
+  encoder;
+  updates = null;
+  cloneFrom = null;
+  constructor(options = {}) {
+    this.encoder = options.encoder || new HttpUrlEncodingCodec();
+    if (options.fromString) {
+      if (options.fromObject) {
+        throw new RuntimeError(2805, ngDevMode && "Cannot specify both fromString and fromObject.");
+      }
+      this.map = paramParser(options.fromString, this.encoder);
+    } else if (!!options.fromObject) {
+      this.map = /* @__PURE__ */ new Map();
+      Object.keys(options.fromObject).forEach((key) => {
+        const value = options.fromObject[key];
+        const values = Array.isArray(value) ? value.map(valueToString) : [valueToString(value)];
+        this.map.set(key, values);
+      });
+    } else {
+      this.map = null;
+    }
+  }
+  has(param) {
+    this.init();
+    return this.map.has(param);
+  }
+  get(param) {
+    this.init();
+    const res = this.map.get(param);
+    return !!res ? res[0] : null;
+  }
+  getAll(param) {
+    this.init();
+    return this.map.get(param) || null;
+  }
+  keys() {
+    this.init();
+    return Array.from(this.map.keys());
+  }
+  append(param, value) {
+    return this.clone({
+      param,
+      value,
+      op: "a"
+    });
+  }
+  appendAll(params) {
+    const updates = [];
+    Object.keys(params).forEach((param) => {
+      const value = params[param];
+      if (Array.isArray(value)) {
+        value.forEach((_value) => {
+          updates.push({
+            param,
+            value: _value,
+            op: "a"
+          });
+        });
+      } else {
+        updates.push({
+          param,
+          value,
+          op: "a"
+        });
+      }
+    });
+    return this.clone(updates);
+  }
+  set(param, value) {
+    return this.clone({
+      param,
+      value,
+      op: "s"
+    });
+  }
+  delete(param, value) {
+    return this.clone({
+      param,
+      value,
+      op: "d"
+    });
+  }
+  toString() {
+    this.init();
+    return this.keys().map((key) => {
+      const eKey = this.encoder.encodeKey(key);
+      return this.map.get(key).map((value) => eKey + "=" + this.encoder.encodeValue(value)).join("&");
+    }).filter((param) => param !== "").join("&");
+  }
+  clone(update) {
+    const clone = new _HttpParams({
+      encoder: this.encoder
+    });
+    clone.cloneFrom = this.cloneFrom || this;
+    clone.updates = (this.updates || []).concat(update);
+    return clone;
+  }
+  init() {
+    if (this.map === null) {
+      this.map = /* @__PURE__ */ new Map();
+    }
+    if (this.cloneFrom !== null) {
+      this.cloneFrom.init();
+      this.cloneFrom.keys().forEach((key) => this.map.set(key, this.cloneFrom.map.get(key)));
+      this.updates.forEach((update) => {
+        switch (update.op) {
+          case "a":
+          case "s":
+            const base = (update.op === "a" ? this.map.get(update.param) : void 0) || [];
+            base.push(valueToString(update.value));
+            this.map.set(update.param, base);
+            break;
+          case "d":
+            if (update.value !== void 0) {
+              let base2 = this.map.get(update.param) || [];
+              const idx = base2.indexOf(valueToString(update.value));
+              if (idx !== -1) {
+                base2.splice(idx, 1);
+              }
+              if (base2.length > 0) {
+                this.map.set(update.param, base2);
+              } else {
+                this.map.delete(update.param);
+              }
+            } else {
+              this.map.delete(update.param);
+              break;
+            }
+        }
+      });
+      this.cloneFrom = this.updates = null;
+    }
+  }
+};
+function mightHaveBody(method) {
+  switch (method) {
+    case "DELETE":
+    case "GET":
+    case "HEAD":
+    case "OPTIONS":
+    case "JSONP":
+      return false;
+    default:
+      return true;
+  }
+}
+function isArrayBuffer(value) {
+  return typeof ArrayBuffer !== "undefined" && value instanceof ArrayBuffer;
+}
+function isBlob(value) {
+  return typeof Blob !== "undefined" && value instanceof Blob;
+}
+function isFormData(value) {
+  return typeof FormData !== "undefined" && value instanceof FormData;
+}
+function isUrlSearchParams(value) {
+  return typeof URLSearchParams !== "undefined" && value instanceof URLSearchParams;
+}
+var CONTENT_TYPE_HEADER = "Content-Type";
+var ACCEPT_HEADER = "Accept";
+var TEXT_CONTENT_TYPE = "text/plain";
+var JSON_CONTENT_TYPE = "application/json";
+var ACCEPT_HEADER_VALUE = `${JSON_CONTENT_TYPE}, ${TEXT_CONTENT_TYPE}, */*`;
+var HttpRequest = class _HttpRequest {
+  url;
+  body = null;
+  headers;
+  context;
+  reportProgress = false;
+  withCredentials = false;
+  credentials;
+  keepalive = false;
+  cache;
+  priority;
+  mode;
+  redirect;
+  referrer;
+  integrity;
+  referrerPolicy;
+  responseType = "json";
+  method;
+  params;
+  urlWithParams;
+  transferCache;
+  timeout;
+  constructor(method, url, third, fourth) {
+    this.url = url;
+    this.method = method.toUpperCase();
+    let options;
+    if (mightHaveBody(this.method) || !!fourth) {
+      this.body = third !== void 0 ? third : null;
+      options = fourth;
+    } else {
+      options = third;
+    }
+    if (options) {
+      this.reportProgress = !!options.reportProgress;
+      this.withCredentials = !!options.withCredentials;
+      this.keepalive = !!options.keepalive;
+      if (!!options.responseType) {
+        this.responseType = options.responseType;
+      }
+      if (options.headers) {
+        this.headers = options.headers;
+      }
+      if (options.context) {
+        this.context = options.context;
+      }
+      if (options.params) {
+        this.params = options.params;
+      }
+      if (options.priority) {
+        this.priority = options.priority;
+      }
+      if (options.cache) {
+        this.cache = options.cache;
+      }
+      if (options.credentials) {
+        this.credentials = options.credentials;
+      }
+      if (typeof options.timeout === "number") {
+        if (options.timeout < 1 || !Number.isInteger(options.timeout)) {
+          throw new RuntimeError(2822, ngDevMode ? "`timeout` must be a positive integer value" : "");
+        }
+        this.timeout = options.timeout;
+      }
+      if (options.mode) {
+        this.mode = options.mode;
+      }
+      if (options.redirect) {
+        this.redirect = options.redirect;
+      }
+      if (options.integrity) {
+        this.integrity = options.integrity;
+      }
+      if (options.referrer) {
+        this.referrer = options.referrer;
+      }
+      if (options.referrerPolicy) {
+        this.referrerPolicy = options.referrerPolicy;
+      }
+      this.transferCache = options.transferCache;
+    }
+    this.headers ??= new HttpHeaders();
+    this.context ??= new HttpContext();
+    if (!this.params) {
+      this.params = new HttpParams();
+      this.urlWithParams = url;
+    } else {
+      const params = this.params.toString();
+      if (params.length === 0) {
+        this.urlWithParams = url;
+      } else {
+        const qIdx = url.indexOf("?");
+        const sep = qIdx === -1 ? "?" : qIdx < url.length - 1 ? "&" : "";
+        this.urlWithParams = url + sep + params;
+      }
+    }
+  }
+  serializeBody() {
+    if (this.body === null) {
+      return null;
+    }
+    if (typeof this.body === "string" || isArrayBuffer(this.body) || isBlob(this.body) || isFormData(this.body) || isUrlSearchParams(this.body)) {
+      return this.body;
+    }
+    if (this.body instanceof HttpParams) {
+      return this.body.toString();
+    }
+    if (typeof this.body === "object" || typeof this.body === "boolean" || Array.isArray(this.body)) {
+      return JSON.stringify(this.body);
+    }
+    return this.body.toString();
+  }
+  detectContentTypeHeader() {
+    if (this.body === null) {
+      return null;
+    }
+    if (isFormData(this.body)) {
+      return null;
+    }
+    if (isBlob(this.body)) {
+      return this.body.type || null;
+    }
+    if (isArrayBuffer(this.body)) {
+      return null;
+    }
+    if (typeof this.body === "string") {
+      return TEXT_CONTENT_TYPE;
+    }
+    if (this.body instanceof HttpParams) {
+      return "application/x-www-form-urlencoded;charset=UTF-8";
+    }
+    if (typeof this.body === "object" || typeof this.body === "number" || typeof this.body === "boolean") {
+      return JSON_CONTENT_TYPE;
+    }
+    return null;
+  }
+  clone(update = {}) {
+    const method = update.method || this.method;
+    const url = update.url || this.url;
+    const responseType = update.responseType || this.responseType;
+    const keepalive = update.keepalive ?? this.keepalive;
+    const priority = update.priority || this.priority;
+    const cache = update.cache || this.cache;
+    const mode = update.mode || this.mode;
+    const redirect = update.redirect || this.redirect;
+    const credentials = update.credentials || this.credentials;
+    const referrer = update.referrer || this.referrer;
+    const integrity = update.integrity || this.integrity;
+    const referrerPolicy = update.referrerPolicy || this.referrerPolicy;
+    const transferCache = update.transferCache ?? this.transferCache;
+    const timeout = update.timeout ?? this.timeout;
+    const body = update.body !== void 0 ? update.body : this.body;
+    const withCredentials = update.withCredentials ?? this.withCredentials;
+    const reportProgress = update.reportProgress ?? this.reportProgress;
+    let headers = update.headers || this.headers;
+    let params = update.params || this.params;
+    const context2 = update.context ?? this.context;
+    if (update.setHeaders !== void 0) {
+      headers = Object.keys(update.setHeaders).reduce((headers2, name) => headers2.set(name, update.setHeaders[name]), headers);
+    }
+    if (update.setParams) {
+      params = Object.keys(update.setParams).reduce((params2, param) => params2.set(param, update.setParams[param]), params);
+    }
+    return new _HttpRequest(method, url, body, {
+      params,
+      headers,
+      context: context2,
+      reportProgress,
+      responseType,
+      withCredentials,
+      transferCache,
+      keepalive,
+      cache,
+      priority,
+      timeout,
+      mode,
+      redirect,
+      credentials,
+      referrer,
+      integrity,
+      referrerPolicy
+    });
+  }
+};
+var HttpEventType;
+(function(HttpEventType2) {
+  HttpEventType2[HttpEventType2["Sent"] = 0] = "Sent";
+  HttpEventType2[HttpEventType2["UploadProgress"] = 1] = "UploadProgress";
+  HttpEventType2[HttpEventType2["ResponseHeader"] = 2] = "ResponseHeader";
+  HttpEventType2[HttpEventType2["DownloadProgress"] = 3] = "DownloadProgress";
+  HttpEventType2[HttpEventType2["Response"] = 4] = "Response";
+  HttpEventType2[HttpEventType2["User"] = 5] = "User";
+})(HttpEventType || (HttpEventType = {}));
+var HttpResponseBase = class {
+  headers;
+  status;
+  statusText;
+  url;
+  ok;
+  type;
+  redirected;
+  responseType;
+  constructor(init, defaultStatus = 200, defaultStatusText = "OK") {
+    this.headers = init.headers || new HttpHeaders();
+    this.status = init.status !== void 0 ? init.status : defaultStatus;
+    this.statusText = init.statusText || defaultStatusText;
+    this.url = init.url || null;
+    this.redirected = init.redirected;
+    this.responseType = init.responseType;
+    this.ok = this.status >= 200 && this.status < 300;
+  }
+};
+var HttpHeaderResponse = class _HttpHeaderResponse extends HttpResponseBase {
+  constructor(init = {}) {
+    super(init);
+  }
+  type = HttpEventType.ResponseHeader;
+  clone(update = {}) {
+    return new _HttpHeaderResponse({
+      headers: update.headers || this.headers,
+      status: update.status !== void 0 ? update.status : this.status,
+      statusText: update.statusText || this.statusText,
+      url: update.url || this.url || void 0
+    });
+  }
+};
+var HttpResponse = class _HttpResponse extends HttpResponseBase {
+  body;
+  constructor(init = {}) {
+    super(init);
+    this.body = init.body !== void 0 ? init.body : null;
+  }
+  type = HttpEventType.Response;
+  clone(update = {}) {
+    return new _HttpResponse({
+      body: update.body !== void 0 ? update.body : this.body,
+      headers: update.headers || this.headers,
+      status: update.status !== void 0 ? update.status : this.status,
+      statusText: update.statusText || this.statusText,
+      url: update.url || this.url || void 0,
+      redirected: update.redirected ?? this.redirected,
+      responseType: update.responseType ?? this.responseType
+    });
+  }
+};
+var HttpErrorResponse = class extends HttpResponseBase {
+  name = "HttpErrorResponse";
+  message;
+  error;
+  ok = false;
+  constructor(init) {
+    super(init, 0, "Unknown Error");
+    if (this.status >= 200 && this.status < 300) {
+      this.message = `Http failure during parsing for ${init.url || "(unknown url)"}`;
+    } else {
+      this.message = `Http failure response for ${init.url || "(unknown url)"}: ${init.status} ${init.statusText}`;
+    }
+    this.error = init.error || null;
+  }
+};
+var HTTP_STATUS_CODE_OK = 200;
+var HTTP_STATUS_CODE_NO_CONTENT = 204;
+var HttpStatusCode;
+(function(HttpStatusCode2) {
+  HttpStatusCode2[HttpStatusCode2["Continue"] = 100] = "Continue";
+  HttpStatusCode2[HttpStatusCode2["SwitchingProtocols"] = 101] = "SwitchingProtocols";
+  HttpStatusCode2[HttpStatusCode2["Processing"] = 102] = "Processing";
+  HttpStatusCode2[HttpStatusCode2["EarlyHints"] = 103] = "EarlyHints";
+  HttpStatusCode2[HttpStatusCode2["Ok"] = 200] = "Ok";
+  HttpStatusCode2[HttpStatusCode2["Created"] = 201] = "Created";
+  HttpStatusCode2[HttpStatusCode2["Accepted"] = 202] = "Accepted";
+  HttpStatusCode2[HttpStatusCode2["NonAuthoritativeInformation"] = 203] = "NonAuthoritativeInformation";
+  HttpStatusCode2[HttpStatusCode2["NoContent"] = 204] = "NoContent";
+  HttpStatusCode2[HttpStatusCode2["ResetContent"] = 205] = "ResetContent";
+  HttpStatusCode2[HttpStatusCode2["PartialContent"] = 206] = "PartialContent";
+  HttpStatusCode2[HttpStatusCode2["MultiStatus"] = 207] = "MultiStatus";
+  HttpStatusCode2[HttpStatusCode2["AlreadyReported"] = 208] = "AlreadyReported";
+  HttpStatusCode2[HttpStatusCode2["ImUsed"] = 226] = "ImUsed";
+  HttpStatusCode2[HttpStatusCode2["MultipleChoices"] = 300] = "MultipleChoices";
+  HttpStatusCode2[HttpStatusCode2["MovedPermanently"] = 301] = "MovedPermanently";
+  HttpStatusCode2[HttpStatusCode2["Found"] = 302] = "Found";
+  HttpStatusCode2[HttpStatusCode2["SeeOther"] = 303] = "SeeOther";
+  HttpStatusCode2[HttpStatusCode2["NotModified"] = 304] = "NotModified";
+  HttpStatusCode2[HttpStatusCode2["UseProxy"] = 305] = "UseProxy";
+  HttpStatusCode2[HttpStatusCode2["Unused"] = 306] = "Unused";
+  HttpStatusCode2[HttpStatusCode2["TemporaryRedirect"] = 307] = "TemporaryRedirect";
+  HttpStatusCode2[HttpStatusCode2["PermanentRedirect"] = 308] = "PermanentRedirect";
+  HttpStatusCode2[HttpStatusCode2["BadRequest"] = 400] = "BadRequest";
+  HttpStatusCode2[HttpStatusCode2["Unauthorized"] = 401] = "Unauthorized";
+  HttpStatusCode2[HttpStatusCode2["PaymentRequired"] = 402] = "PaymentRequired";
+  HttpStatusCode2[HttpStatusCode2["Forbidden"] = 403] = "Forbidden";
+  HttpStatusCode2[HttpStatusCode2["NotFound"] = 404] = "NotFound";
+  HttpStatusCode2[HttpStatusCode2["MethodNotAllowed"] = 405] = "MethodNotAllowed";
+  HttpStatusCode2[HttpStatusCode2["NotAcceptable"] = 406] = "NotAcceptable";
+  HttpStatusCode2[HttpStatusCode2["ProxyAuthenticationRequired"] = 407] = "ProxyAuthenticationRequired";
+  HttpStatusCode2[HttpStatusCode2["RequestTimeout"] = 408] = "RequestTimeout";
+  HttpStatusCode2[HttpStatusCode2["Conflict"] = 409] = "Conflict";
+  HttpStatusCode2[HttpStatusCode2["Gone"] = 410] = "Gone";
+  HttpStatusCode2[HttpStatusCode2["LengthRequired"] = 411] = "LengthRequired";
+  HttpStatusCode2[HttpStatusCode2["PreconditionFailed"] = 412] = "PreconditionFailed";
+  HttpStatusCode2[HttpStatusCode2["PayloadTooLarge"] = 413] = "PayloadTooLarge";
+  HttpStatusCode2[HttpStatusCode2["UriTooLong"] = 414] = "UriTooLong";
+  HttpStatusCode2[HttpStatusCode2["UnsupportedMediaType"] = 415] = "UnsupportedMediaType";
+  HttpStatusCode2[HttpStatusCode2["RangeNotSatisfiable"] = 416] = "RangeNotSatisfiable";
+  HttpStatusCode2[HttpStatusCode2["ExpectationFailed"] = 417] = "ExpectationFailed";
+  HttpStatusCode2[HttpStatusCode2["ImATeapot"] = 418] = "ImATeapot";
+  HttpStatusCode2[HttpStatusCode2["MisdirectedRequest"] = 421] = "MisdirectedRequest";
+  HttpStatusCode2[HttpStatusCode2["UnprocessableEntity"] = 422] = "UnprocessableEntity";
+  HttpStatusCode2[HttpStatusCode2["Locked"] = 423] = "Locked";
+  HttpStatusCode2[HttpStatusCode2["FailedDependency"] = 424] = "FailedDependency";
+  HttpStatusCode2[HttpStatusCode2["TooEarly"] = 425] = "TooEarly";
+  HttpStatusCode2[HttpStatusCode2["UpgradeRequired"] = 426] = "UpgradeRequired";
+  HttpStatusCode2[HttpStatusCode2["PreconditionRequired"] = 428] = "PreconditionRequired";
+  HttpStatusCode2[HttpStatusCode2["TooManyRequests"] = 429] = "TooManyRequests";
+  HttpStatusCode2[HttpStatusCode2["RequestHeaderFieldsTooLarge"] = 431] = "RequestHeaderFieldsTooLarge";
+  HttpStatusCode2[HttpStatusCode2["UnavailableForLegalReasons"] = 451] = "UnavailableForLegalReasons";
+  HttpStatusCode2[HttpStatusCode2["InternalServerError"] = 500] = "InternalServerError";
+  HttpStatusCode2[HttpStatusCode2["NotImplemented"] = 501] = "NotImplemented";
+  HttpStatusCode2[HttpStatusCode2["BadGateway"] = 502] = "BadGateway";
+  HttpStatusCode2[HttpStatusCode2["ServiceUnavailable"] = 503] = "ServiceUnavailable";
+  HttpStatusCode2[HttpStatusCode2["GatewayTimeout"] = 504] = "GatewayTimeout";
+  HttpStatusCode2[HttpStatusCode2["HttpVersionNotSupported"] = 505] = "HttpVersionNotSupported";
+  HttpStatusCode2[HttpStatusCode2["VariantAlsoNegotiates"] = 506] = "VariantAlsoNegotiates";
+  HttpStatusCode2[HttpStatusCode2["InsufficientStorage"] = 507] = "InsufficientStorage";
+  HttpStatusCode2[HttpStatusCode2["LoopDetected"] = 508] = "LoopDetected";
+  HttpStatusCode2[HttpStatusCode2["NotExtended"] = 510] = "NotExtended";
+  HttpStatusCode2[HttpStatusCode2["NetworkAuthenticationRequired"] = 511] = "NetworkAuthenticationRequired";
+})(HttpStatusCode || (HttpStatusCode = {}));
+var XSSI_PREFIX$1 = /^\)\]\}',?\n/;
+var FETCH_BACKEND = new InjectionToken(typeof ngDevMode === "undefined" || ngDevMode ? "FETCH_BACKEND" : "");
+var FetchBackend = class _FetchBackend {
+  fetchImpl = inject2(FetchFactory, {
+    optional: true
+  })?.fetch ?? ((...args) => globalThis.fetch(...args));
+  ngZone = inject2(NgZone);
+  destroyRef = inject2(DestroyRef);
+  handle(request) {
+    return new Observable((observer) => {
+      const aborter = new AbortController();
+      this.doRequest(request, aborter.signal, observer).then(noop3, (error) => observer.error(new HttpErrorResponse({
+        error
+      })));
+      let timeoutId;
+      if (request.timeout) {
+        timeoutId = this.ngZone.runOutsideAngular(() => setTimeout(() => {
+          if (!aborter.signal.aborted) {
+            aborter.abort(new DOMException("signal timed out", "TimeoutError"));
+          }
+        }, request.timeout));
+      }
+      return () => {
+        if (timeoutId !== void 0) {
+          clearTimeout(timeoutId);
+        }
+        aborter.abort();
+      };
+    });
+  }
+  async doRequest(request, signal2, observer) {
+    const init = this.createRequestInit(request);
+    let response;
+    try {
+      const fetchPromise = this.ngZone.runOutsideAngular(() => this.fetchImpl(request.urlWithParams, __spreadValues({
+        signal: signal2
+      }, init)));
+      silenceSuperfluousUnhandledPromiseRejection(fetchPromise);
+      observer.next({
+        type: HttpEventType.Sent
+      });
+      response = await fetchPromise;
+    } catch (error) {
+      observer.error(new HttpErrorResponse({
+        error,
+        status: error.status ?? 0,
+        statusText: error.statusText,
+        url: request.urlWithParams,
+        headers: error.headers
+      }));
+      return;
+    }
+    const headers = new HttpHeaders(response.headers);
+    const statusText = response.statusText;
+    const url = response.url || request.urlWithParams;
+    let status = response.status;
+    let body = null;
+    if (request.reportProgress) {
+      observer.next(new HttpHeaderResponse({
+        headers,
+        status,
+        statusText,
+        url
+      }));
+    }
+    if (response.body) {
+      const contentLength = response.headers.get("content-length");
+      const chunks = [];
+      const reader = response.body.getReader();
+      let receivedLength = 0;
+      let decoder;
+      let partialText;
+      const reqZone = typeof Zone !== "undefined" && Zone.current;
+      let canceled = false;
+      await this.ngZone.runOutsideAngular(async () => {
+        while (true) {
+          if (this.destroyRef.destroyed) {
+            await reader.cancel();
+            canceled = true;
+            break;
+          }
+          const {
+            done,
+            value
+          } = await reader.read();
+          if (done) {
+            break;
+          }
+          chunks.push(value);
+          receivedLength += value.length;
+          if (request.reportProgress) {
+            partialText = request.responseType === "text" ? (partialText ?? "") + (decoder ??= new TextDecoder()).decode(value, {
+              stream: true
+            }) : void 0;
+            const reportProgress = () => observer.next({
+              type: HttpEventType.DownloadProgress,
+              total: contentLength ? +contentLength : void 0,
+              loaded: receivedLength,
+              partialText
+            });
+            reqZone ? reqZone.run(reportProgress) : reportProgress();
+          }
+        }
+      });
+      if (canceled) {
+        observer.complete();
+        return;
+      }
+      const chunksAll = this.concatChunks(chunks, receivedLength);
+      try {
+        const contentType = response.headers.get(CONTENT_TYPE_HEADER) ?? "";
+        body = this.parseBody(request, chunksAll, contentType, status);
+      } catch (error) {
+        observer.error(new HttpErrorResponse({
+          error,
+          headers: new HttpHeaders(response.headers),
+          status: response.status,
+          statusText: response.statusText,
+          url: response.url || request.urlWithParams
+        }));
+        return;
+      }
+    }
+    if (status === 0) {
+      status = body ? HTTP_STATUS_CODE_OK : 0;
+    }
+    const ok = status >= 200 && status < 300;
+    const redirected = response.redirected;
+    const responseType = response.type;
+    if (ok) {
+      observer.next(new HttpResponse({
+        body,
+        headers,
+        status,
+        statusText,
+        url,
+        redirected,
+        responseType
+      }));
+      observer.complete();
+    } else {
+      observer.error(new HttpErrorResponse({
+        error: body,
+        headers,
+        status,
+        statusText,
+        url,
+        redirected,
+        responseType
+      }));
+    }
+  }
+  parseBody(request, binContent, contentType, status) {
+    switch (request.responseType) {
+      case "json":
+        const text = new TextDecoder().decode(binContent).replace(XSSI_PREFIX$1, "");
+        if (text === "") {
+          return null;
+        }
+        try {
+          return JSON.parse(text);
+        } catch (e) {
+          if (status < 200 || status >= 300) {
+            return text;
+          }
+          throw e;
+        }
+      case "text":
+        return new TextDecoder().decode(binContent);
+      case "blob":
+        return new Blob([binContent], {
+          type: contentType
+        });
+      case "arraybuffer":
+        return binContent.buffer;
+    }
+  }
+  createRequestInit(req) {
+    const headers = {};
+    let credentials;
+    credentials = req.credentials;
+    if (req.withCredentials) {
+      (typeof ngDevMode === "undefined" || ngDevMode) && warningOptionsMessage(req);
+      credentials = "include";
+    }
+    req.headers.forEach((name, values) => headers[name] = values.join(","));
+    if (!req.headers.has(ACCEPT_HEADER)) {
+      headers[ACCEPT_HEADER] = ACCEPT_HEADER_VALUE;
+    }
+    if (!req.headers.has(CONTENT_TYPE_HEADER)) {
+      const detectedType = req.detectContentTypeHeader();
+      if (detectedType !== null) {
+        headers[CONTENT_TYPE_HEADER] = detectedType;
+      }
+    }
+    return {
+      body: req.serializeBody(),
+      method: req.method,
+      headers,
+      credentials,
+      keepalive: req.keepalive,
+      cache: req.cache,
+      priority: req.priority,
+      mode: req.mode,
+      redirect: req.redirect,
+      referrer: req.referrer,
+      integrity: req.integrity,
+      referrerPolicy: req.referrerPolicy
+    };
+  }
+  concatChunks(chunks, totalLength) {
+    const chunksAll = new Uint8Array(totalLength);
+    let position = 0;
+    for (const chunk of chunks) {
+      chunksAll.set(chunk, position);
+      position += chunk.length;
+    }
+    return chunksAll;
+  }
+  static \u0275fac = function FetchBackend_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _FetchBackend)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _FetchBackend,
+    factory: _FetchBackend.\u0275fac
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(FetchBackend, [{
+    type: Injectable
+  }], null, null);
+})();
+var FetchFactory = class {
+};
+function noop3() {
+}
+function warningOptionsMessage(req) {
+  if (req.credentials && req.withCredentials) {
+    console.warn(formatRuntimeError(2819, `Angular detected that a \`HttpClient\` request has both \`withCredentials: true\` and \`credentials: '${req.credentials}'\` options. The \`withCredentials\` option is overriding the explicit \`credentials\` setting to 'include'. Consider removing \`withCredentials\` and using \`credentials: '${req.credentials}'\` directly for clarity.`));
+  }
+}
+function silenceSuperfluousUnhandledPromiseRejection(promise) {
+  promise.then(noop3, noop3);
+}
+var XSSI_PREFIX = /^\)\]\}',?\n/;
+function validateXhrCompatibility(req) {
+  const unsupportedOptions = [{
+    property: "keepalive",
+    errorCode: 2813
+  }, {
+    property: "cache",
+    errorCode: 2814
+  }, {
+    property: "priority",
+    errorCode: 2815
+  }, {
+    property: "mode",
+    errorCode: 2816
+  }, {
+    property: "redirect",
+    errorCode: 2817
+  }, {
+    property: "credentials",
+    errorCode: 2818
+  }, {
+    property: "integrity",
+    errorCode: 2820
+  }, {
+    property: "referrer",
+    errorCode: 2821
+  }, {
+    property: "referrerPolicy",
+    errorCode: 2823
+  }];
+  for (const {
+    property,
+    errorCode
+  } of unsupportedOptions) {
+    if (req[property]) {
+      console.warn(formatRuntimeError(errorCode, `Angular detected that a \`HttpClient\` request with the \`${property}\` option was sent using XHR, which does not support it. To use the \`${property}\` option, enable Fetch API support by passing \`withFetch()\` as an argument to \`provideHttpClient()\`.`));
+    }
+  }
+}
+var HttpXhrBackend = class _HttpXhrBackend {
+  xhrFactory;
+  tracingService = inject2(TracingService, {
+    optional: true
+  });
+  constructor(xhrFactory) {
+    this.xhrFactory = xhrFactory;
+  }
+  maybePropagateTrace(fn) {
+    return this.tracingService?.propagate ? this.tracingService.propagate(fn) : fn;
+  }
+  handle(req) {
+    if (req.method === "JSONP") {
+      throw new RuntimeError(-2800, (typeof ngDevMode === "undefined" || ngDevMode) && `Cannot make a JSONP request without JSONP support. To fix the problem, either add the \`withJsonpSupport()\` call (if \`provideHttpClient()\` is used) or import the \`HttpClientJsonpModule\` in the root NgModule.`);
+    }
+    ngDevMode && validateXhrCompatibility(req);
+    const xhrFactory = this.xhrFactory;
+    const source = false ? from(xhrFactory.\u0275loadImpl()) : of(null);
+    return source.pipe(switchMap(() => {
+      return new Observable((observer) => {
+        const xhr = xhrFactory.build();
+        xhr.open(req.method, req.urlWithParams);
+        if (req.withCredentials) {
+          xhr.withCredentials = true;
+        }
+        req.headers.forEach((name, values) => xhr.setRequestHeader(name, values.join(",")));
+        if (!req.headers.has(ACCEPT_HEADER)) {
+          xhr.setRequestHeader(ACCEPT_HEADER, ACCEPT_HEADER_VALUE);
+        }
+        if (!req.headers.has(CONTENT_TYPE_HEADER)) {
+          const detectedType = req.detectContentTypeHeader();
+          if (detectedType !== null) {
+            xhr.setRequestHeader(CONTENT_TYPE_HEADER, detectedType);
+          }
+        }
+        if (req.timeout) {
+          xhr.timeout = req.timeout;
+        }
+        if (req.responseType) {
+          const responseType = req.responseType.toLowerCase();
+          xhr.responseType = responseType !== "json" ? responseType : "text";
+        }
+        const reqBody = req.serializeBody();
+        let headerResponse = null;
+        const partialFromXhr = () => {
+          if (headerResponse !== null) {
+            return headerResponse;
+          }
+          const statusText = xhr.statusText || "OK";
+          const headers = new HttpHeaders(xhr.getAllResponseHeaders());
+          const url = xhr.responseURL || req.url;
+          headerResponse = new HttpHeaderResponse({
+            headers,
+            status: xhr.status,
+            statusText,
+            url
+          });
+          return headerResponse;
+        };
+        const onLoad = this.maybePropagateTrace(() => {
+          let {
+            headers,
+            status,
+            statusText,
+            url
+          } = partialFromXhr();
+          let body = null;
+          if (status !== HTTP_STATUS_CODE_NO_CONTENT) {
+            body = typeof xhr.response === "undefined" ? xhr.responseText : xhr.response;
+          }
+          if (status === 0) {
+            status = !!body ? HTTP_STATUS_CODE_OK : 0;
+          }
+          let ok = status >= 200 && status < 300;
+          if (req.responseType === "json" && typeof body === "string") {
+            const originalBody = body;
+            body = body.replace(XSSI_PREFIX, "");
+            try {
+              body = body !== "" ? JSON.parse(body) : null;
+            } catch (error) {
+              body = originalBody;
+              if (ok) {
+                ok = false;
+                body = {
+                  error,
+                  text: body
+                };
+              }
+            }
+          }
+          if (ok) {
+            observer.next(new HttpResponse({
+              body,
+              headers,
+              status,
+              statusText,
+              url: url || void 0
+            }));
+            observer.complete();
+          } else {
+            observer.error(new HttpErrorResponse({
+              error: body,
+              headers,
+              status,
+              statusText,
+              url: url || void 0
+            }));
+          }
+        });
+        const onError = this.maybePropagateTrace((error) => {
+          const {
+            url
+          } = partialFromXhr();
+          const res = new HttpErrorResponse({
+            error,
+            status: xhr.status || 0,
+            statusText: xhr.statusText || "Unknown Error",
+            url: url || void 0
+          });
+          observer.error(res);
+        });
+        let onTimeout = onError;
+        if (req.timeout) {
+          onTimeout = this.maybePropagateTrace((_) => {
+            const {
+              url
+            } = partialFromXhr();
+            const res = new HttpErrorResponse({
+              error: new DOMException("Request timed out", "TimeoutError"),
+              status: xhr.status || 0,
+              statusText: xhr.statusText || "Request timeout",
+              url: url || void 0
+            });
+            observer.error(res);
+          });
+        }
+        let sentHeaders = false;
+        const onDownProgress = this.maybePropagateTrace((event) => {
+          if (!sentHeaders) {
+            observer.next(partialFromXhr());
+            sentHeaders = true;
+          }
+          let progressEvent = {
+            type: HttpEventType.DownloadProgress,
+            loaded: event.loaded
+          };
+          if (event.lengthComputable) {
+            progressEvent.total = event.total;
+          }
+          if (req.responseType === "text" && !!xhr.responseText) {
+            progressEvent.partialText = xhr.responseText;
+          }
+          observer.next(progressEvent);
+        });
+        const onUpProgress = this.maybePropagateTrace((event) => {
+          let progress = {
+            type: HttpEventType.UploadProgress,
+            loaded: event.loaded
+          };
+          if (event.lengthComputable) {
+            progress.total = event.total;
+          }
+          observer.next(progress);
+        });
+        xhr.addEventListener("load", onLoad);
+        xhr.addEventListener("error", onError);
+        xhr.addEventListener("timeout", onTimeout);
+        xhr.addEventListener("abort", onError);
+        if (req.reportProgress) {
+          xhr.addEventListener("progress", onDownProgress);
+          if (reqBody !== null && xhr.upload) {
+            xhr.upload.addEventListener("progress", onUpProgress);
+          }
+        }
+        xhr.send(reqBody);
+        observer.next({
+          type: HttpEventType.Sent
+        });
+        return () => {
+          xhr.removeEventListener("error", onError);
+          xhr.removeEventListener("abort", onError);
+          xhr.removeEventListener("load", onLoad);
+          xhr.removeEventListener("timeout", onTimeout);
+          if (req.reportProgress) {
+            xhr.removeEventListener("progress", onDownProgress);
+            if (reqBody !== null && xhr.upload) {
+              xhr.upload.removeEventListener("progress", onUpProgress);
+            }
+          }
+          if (xhr.readyState !== xhr.DONE) {
+            xhr.abort();
+          }
+        };
+      });
+    }));
+  }
+  static \u0275fac = function HttpXhrBackend_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpXhrBackend)(\u0275\u0275inject(XhrFactory));
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpXhrBackend,
+    factory: _HttpXhrBackend.\u0275fac,
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpXhrBackend, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root"
+    }]
+  }], () => [{
+    type: XhrFactory
+  }], null);
+})();
+function interceptorChainEndFn(req, finalHandlerFn) {
+  return finalHandlerFn(req);
+}
+function adaptLegacyInterceptorToChain(chainTailFn, interceptor) {
+  return (initialRequest, finalHandlerFn) => interceptor.intercept(initialRequest, {
+    handle: (downstreamRequest) => chainTailFn(downstreamRequest, finalHandlerFn)
+  });
+}
+function chainedInterceptorFn(chainTailFn, interceptorFn, injector) {
+  return (initialRequest, finalHandlerFn) => runInInjectionContext(injector, () => interceptorFn(initialRequest, (downstreamRequest) => chainTailFn(downstreamRequest, finalHandlerFn)));
+}
+var HTTP_INTERCEPTORS = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "HTTP_INTERCEPTORS" : "");
+var HTTP_INTERCEPTOR_FNS = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "HTTP_INTERCEPTOR_FNS" : "", {
+  factory: () => []
+});
+var HTTP_ROOT_INTERCEPTOR_FNS = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "HTTP_ROOT_INTERCEPTOR_FNS" : "");
+var REQUESTS_CONTRIBUTE_TO_STABILITY = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "REQUESTS_CONTRIBUTE_TO_STABILITY" : "", {
+  providedIn: "root",
+  factory: () => true
+});
+function legacyInterceptorFnFactory() {
+  let chain = null;
+  return (req, handler) => {
+    if (chain === null) {
+      const interceptors = inject2(HTTP_INTERCEPTORS, {
+        optional: true
+      }) ?? [];
+      chain = interceptors.reduceRight(adaptLegacyInterceptorToChain, interceptorChainEndFn);
+    }
+    const pendingTasks = inject2(PendingTasks);
+    const contributeToStability = inject2(REQUESTS_CONTRIBUTE_TO_STABILITY);
+    if (contributeToStability) {
+      const removeTask = pendingTasks.add();
+      return chain(req, handler).pipe(finalize(removeTask));
+    } else {
+      return chain(req, handler);
+    }
+  };
+}
+var HttpBackend = class _HttpBackend {
+  static \u0275fac = function HttpBackend_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpBackend)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpBackend,
+    factory: function HttpBackend_Factory(__ngFactoryType__) {
+      let __ngConditionalFactory__ = null;
+      if (__ngFactoryType__) {
+        __ngConditionalFactory__ = new (__ngFactoryType__ || _HttpBackend)();
+      } else {
+        __ngConditionalFactory__ = \u0275\u0275inject(HttpXhrBackend);
+      }
+      return __ngConditionalFactory__;
+    },
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpBackend, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root",
+      useExisting: HttpXhrBackend
+    }]
+  }], null, null);
+})();
+var fetchBackendWarningDisplayed = false;
+var HttpInterceptorHandler = class _HttpInterceptorHandler {
+  backend;
+  injector;
+  chain = null;
+  pendingTasks = inject2(PendingTasks);
+  contributeToStability = inject2(REQUESTS_CONTRIBUTE_TO_STABILITY);
+  constructor(backend, injector) {
+    this.backend = backend;
+    this.injector = injector;
+    if ((typeof ngDevMode === "undefined" || ngDevMode) && !fetchBackendWarningDisplayed) {
+      const isTestingBackend = this.backend.isTestingBackend;
+      if (false) {
+        fetchBackendWarningDisplayed = true;
+        injector.get(Console).warn(formatRuntimeError(2801, "Angular detected that `HttpClient` is not configured to use `fetch` APIs. It's strongly recommended to enable `fetch` for applications that use Server-Side Rendering for better performance and compatibility. To enable `fetch`, add the `withFetch()` to the `provideHttpClient()` call at the root of the application."));
+      }
+    }
+  }
+  handle(initialRequest) {
+    if (this.chain === null) {
+      const dedupedInterceptorFns = Array.from(/* @__PURE__ */ new Set([...this.injector.get(HTTP_INTERCEPTOR_FNS), ...this.injector.get(HTTP_ROOT_INTERCEPTOR_FNS, [])]));
+      this.chain = dedupedInterceptorFns.reduceRight((nextSequencedFn, interceptorFn) => chainedInterceptorFn(nextSequencedFn, interceptorFn, this.injector), interceptorChainEndFn);
+    }
+    if (this.contributeToStability) {
+      const removeTask = this.pendingTasks.add();
+      return this.chain(initialRequest, (downstreamRequest) => this.backend.handle(downstreamRequest)).pipe(finalize(removeTask));
+    } else {
+      return this.chain(initialRequest, (downstreamRequest) => this.backend.handle(downstreamRequest));
+    }
+  }
+  static \u0275fac = function HttpInterceptorHandler_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpInterceptorHandler)(\u0275\u0275inject(HttpBackend), \u0275\u0275inject(EnvironmentInjector));
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpInterceptorHandler,
+    factory: _HttpInterceptorHandler.\u0275fac,
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpInterceptorHandler, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root"
+    }]
+  }], () => [{
+    type: HttpBackend
+  }, {
+    type: EnvironmentInjector
+  }], null);
+})();
+var HttpHandler = class _HttpHandler {
+  static \u0275fac = function HttpHandler_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpHandler)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpHandler,
+    factory: function HttpHandler_Factory(__ngFactoryType__) {
+      let __ngConditionalFactory__ = null;
+      if (__ngFactoryType__) {
+        __ngConditionalFactory__ = new (__ngFactoryType__ || _HttpHandler)();
+      } else {
+        __ngConditionalFactory__ = \u0275\u0275inject(HttpInterceptorHandler);
+      }
+      return __ngConditionalFactory__;
+    },
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpHandler, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root",
+      useExisting: HttpInterceptorHandler
+    }]
+  }], null, null);
+})();
+function addBody(options, body) {
+  return {
+    body,
+    headers: options.headers,
+    context: options.context,
+    observe: options.observe,
+    params: options.params,
+    reportProgress: options.reportProgress,
+    responseType: options.responseType,
+    withCredentials: options.withCredentials,
+    credentials: options.credentials,
+    transferCache: options.transferCache,
+    timeout: options.timeout,
+    keepalive: options.keepalive,
+    priority: options.priority,
+    cache: options.cache,
+    mode: options.mode,
+    redirect: options.redirect,
+    integrity: options.integrity,
+    referrer: options.referrer,
+    referrerPolicy: options.referrerPolicy
+  };
+}
+var HttpClient = class _HttpClient {
+  handler;
+  constructor(handler) {
+    this.handler = handler;
+  }
+  request(first2, url, options = {}) {
+    let req;
+    if (first2 instanceof HttpRequest) {
+      req = first2;
+    } else {
+      let headers = void 0;
+      if (options.headers instanceof HttpHeaders) {
+        headers = options.headers;
+      } else {
+        headers = new HttpHeaders(options.headers);
+      }
+      let params = void 0;
+      if (!!options.params) {
+        if (options.params instanceof HttpParams) {
+          params = options.params;
+        } else {
+          params = new HttpParams({
+            fromObject: options.params
+          });
+        }
+      }
+      req = new HttpRequest(first2, url, options.body !== void 0 ? options.body : null, {
+        headers,
+        context: options.context,
+        params,
+        reportProgress: options.reportProgress,
+        responseType: options.responseType || "json",
+        withCredentials: options.withCredentials,
+        transferCache: options.transferCache,
+        keepalive: options.keepalive,
+        priority: options.priority,
+        cache: options.cache,
+        mode: options.mode,
+        redirect: options.redirect,
+        credentials: options.credentials,
+        referrer: options.referrer,
+        referrerPolicy: options.referrerPolicy,
+        integrity: options.integrity,
+        timeout: options.timeout
+      });
+    }
+    const events$ = of(req).pipe(concatMap((req2) => this.handler.handle(req2)));
+    if (first2 instanceof HttpRequest || options.observe === "events") {
+      return events$;
+    }
+    const res$ = events$.pipe(filter((event) => event instanceof HttpResponse));
+    switch (options.observe || "body") {
+      case "body":
+        switch (req.responseType) {
+          case "arraybuffer":
+            return res$.pipe(map((res) => {
+              if (res.body !== null && !(res.body instanceof ArrayBuffer)) {
+                throw new RuntimeError(2806, ngDevMode && "Response is not an ArrayBuffer.");
+              }
+              return res.body;
+            }));
+          case "blob":
+            return res$.pipe(map((res) => {
+              if (res.body !== null && !(res.body instanceof Blob)) {
+                throw new RuntimeError(2807, ngDevMode && "Response is not a Blob.");
+              }
+              return res.body;
+            }));
+          case "text":
+            return res$.pipe(map((res) => {
+              if (res.body !== null && typeof res.body !== "string") {
+                throw new RuntimeError(2808, ngDevMode && "Response is not a string.");
+              }
+              return res.body;
+            }));
+          case "json":
+          default:
+            return res$.pipe(map((res) => res.body));
+        }
+      case "response":
+        return res$;
+      default:
+        throw new RuntimeError(2809, ngDevMode && `Unreachable: unhandled observe type ${options.observe}}`);
+    }
+  }
+  delete(url, options = {}) {
+    return this.request("DELETE", url, options);
+  }
+  get(url, options = {}) {
+    return this.request("GET", url, options);
+  }
+  head(url, options = {}) {
+    return this.request("HEAD", url, options);
+  }
+  jsonp(url, callbackParam) {
+    return this.request("JSONP", url, {
+      params: new HttpParams().append(callbackParam, "JSONP_CALLBACK"),
+      observe: "body",
+      responseType: "json"
+    });
+  }
+  options(url, options = {}) {
+    return this.request("OPTIONS", url, options);
+  }
+  patch(url, body, options = {}) {
+    return this.request("PATCH", url, addBody(options, body));
+  }
+  post(url, body, options = {}) {
+    return this.request("POST", url, addBody(options, body));
+  }
+  put(url, body, options = {}) {
+    return this.request("PUT", url, addBody(options, body));
+  }
+  static \u0275fac = function HttpClient_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpClient)(\u0275\u0275inject(HttpHandler));
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpClient,
+    factory: _HttpClient.\u0275fac,
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpClient, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root"
+    }]
+  }], () => [{
+    type: HttpHandler
+  }], null);
+})();
+var nextRequestId = 0;
+var foreignDocument;
+var JSONP_ERR_NO_CALLBACK = "JSONP injected script did not invoke callback.";
+var JSONP_ERR_WRONG_METHOD = "JSONP requests must use JSONP request method.";
+var JSONP_ERR_WRONG_RESPONSE_TYPE = "JSONP requests must use Json response type.";
+var JSONP_ERR_HEADERS_NOT_SUPPORTED = "JSONP requests do not support headers.";
+var JsonpCallbackContext = class {
+};
+function jsonpCallbackContext() {
+  if (typeof window === "object") {
+    return window;
+  }
+  return {};
+}
+var JsonpClientBackend = class _JsonpClientBackend {
+  callbackMap;
+  document;
+  resolvedPromise = Promise.resolve();
+  constructor(callbackMap, document2) {
+    this.callbackMap = callbackMap;
+    this.document = document2;
+  }
+  nextCallback() {
+    return `ng_jsonp_callback_${nextRequestId++}`;
+  }
+  handle(req) {
+    if (req.method !== "JSONP") {
+      throw new RuntimeError(2810, ngDevMode && JSONP_ERR_WRONG_METHOD);
+    } else if (req.responseType !== "json") {
+      throw new RuntimeError(2811, ngDevMode && JSONP_ERR_WRONG_RESPONSE_TYPE);
+    }
+    if (req.headers.keys().length > 0) {
+      throw new RuntimeError(2812, ngDevMode && JSONP_ERR_HEADERS_NOT_SUPPORTED);
+    }
+    return new Observable((observer) => {
+      const callback = this.nextCallback();
+      const url = req.urlWithParams.replace(/=JSONP_CALLBACK(&|$)/, `=${callback}$1`);
+      const node = this.document.createElement("script");
+      node.src = url;
+      let body = null;
+      let finished = false;
+      this.callbackMap[callback] = (data) => {
+        delete this.callbackMap[callback];
+        body = data;
+        finished = true;
+      };
+      const cleanup = () => {
+        node.removeEventListener("load", onLoad);
+        node.removeEventListener("error", onError);
+        node.remove();
+        delete this.callbackMap[callback];
+      };
+      const onLoad = () => {
+        this.resolvedPromise.then(() => {
+          cleanup();
+          if (!finished) {
+            observer.error(new HttpErrorResponse({
+              url,
+              status: 0,
+              statusText: "JSONP Error",
+              error: new Error(JSONP_ERR_NO_CALLBACK)
+            }));
+            return;
+          }
+          observer.next(new HttpResponse({
+            body,
+            status: HTTP_STATUS_CODE_OK,
+            statusText: "OK",
+            url
+          }));
+          observer.complete();
+        });
+      };
+      const onError = (error) => {
+        cleanup();
+        observer.error(new HttpErrorResponse({
+          error,
+          status: 0,
+          statusText: "JSONP Error",
+          url
+        }));
+      };
+      node.addEventListener("load", onLoad);
+      node.addEventListener("error", onError);
+      this.document.body.appendChild(node);
+      observer.next({
+        type: HttpEventType.Sent
+      });
+      return () => {
+        if (!finished) {
+          this.removeListeners(node);
+        }
+        cleanup();
+      };
+    });
+  }
+  removeListeners(script) {
+    foreignDocument ??= this.document.implementation.createHTMLDocument();
+    foreignDocument.adoptNode(script);
+  }
+  static \u0275fac = function JsonpClientBackend_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _JsonpClientBackend)(\u0275\u0275inject(JsonpCallbackContext), \u0275\u0275inject(DOCUMENT));
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _JsonpClientBackend,
+    factory: _JsonpClientBackend.\u0275fac
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(JsonpClientBackend, [{
+    type: Injectable
+  }], () => [{
+    type: JsonpCallbackContext
+  }, {
+    type: void 0,
+    decorators: [{
+      type: Inject,
+      args: [DOCUMENT]
+    }]
+  }], null);
+})();
+function jsonpInterceptorFn(req, next) {
+  if (req.method === "JSONP") {
+    return inject2(JsonpClientBackend).handle(req);
+  }
+  return next(req);
+}
+var JsonpInterceptor = class _JsonpInterceptor {
+  injector;
+  constructor(injector) {
+    this.injector = injector;
+  }
+  intercept(initialRequest, next) {
+    return runInInjectionContext(this.injector, () => jsonpInterceptorFn(initialRequest, (downstreamRequest) => next.handle(downstreamRequest)));
+  }
+  static \u0275fac = function JsonpInterceptor_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _JsonpInterceptor)(\u0275\u0275inject(EnvironmentInjector));
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _JsonpInterceptor,
+    factory: _JsonpInterceptor.\u0275fac
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(JsonpInterceptor, [{
+    type: Injectable
+  }], () => [{
+    type: EnvironmentInjector
+  }], null);
+})();
+var XSRF_ENABLED = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "XSRF_ENABLED" : "", {
+  factory: () => true
+});
+var XSRF_DEFAULT_COOKIE_NAME = "XSRF-TOKEN";
+var XSRF_COOKIE_NAME = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "XSRF_COOKIE_NAME" : "", {
+  providedIn: "root",
+  factory: () => XSRF_DEFAULT_COOKIE_NAME
+});
+var XSRF_DEFAULT_HEADER_NAME = "X-XSRF-TOKEN";
+var XSRF_HEADER_NAME = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "XSRF_HEADER_NAME" : "", {
+  providedIn: "root",
+  factory: () => XSRF_DEFAULT_HEADER_NAME
+});
+var HttpXsrfCookieExtractor = class _HttpXsrfCookieExtractor {
+  cookieName = inject2(XSRF_COOKIE_NAME);
+  doc = inject2(DOCUMENT);
+  lastCookieString = "";
+  lastToken = null;
+  parseCount = 0;
+  getToken() {
+    if (false) {
+      return null;
+    }
+    const cookieString = this.doc.cookie || "";
+    if (cookieString !== this.lastCookieString) {
+      this.parseCount++;
+      this.lastToken = parseCookieValue(cookieString, this.cookieName);
+      this.lastCookieString = cookieString;
+    }
+    return this.lastToken;
+  }
+  static \u0275fac = function HttpXsrfCookieExtractor_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpXsrfCookieExtractor)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpXsrfCookieExtractor,
+    factory: _HttpXsrfCookieExtractor.\u0275fac,
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpXsrfCookieExtractor, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root"
+    }]
+  }], null, null);
+})();
+var HttpXsrfTokenExtractor = class _HttpXsrfTokenExtractor {
+  static \u0275fac = function HttpXsrfTokenExtractor_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpXsrfTokenExtractor)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpXsrfTokenExtractor,
+    factory: function HttpXsrfTokenExtractor_Factory(__ngFactoryType__) {
+      let __ngConditionalFactory__ = null;
+      if (__ngFactoryType__) {
+        __ngConditionalFactory__ = new (__ngFactoryType__ || _HttpXsrfTokenExtractor)();
+      } else {
+        __ngConditionalFactory__ = \u0275\u0275inject(HttpXsrfCookieExtractor);
+      }
+      return __ngConditionalFactory__;
+    },
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpXsrfTokenExtractor, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root",
+      useExisting: HttpXsrfCookieExtractor
+    }]
+  }], null, null);
+})();
+var ABSOLUTE_URL_REGEX = /^(?:https?:)?\/\//i;
+function xsrfInterceptorFn(req, next) {
+  if (!inject2(XSRF_ENABLED) || req.method === "GET" || req.method === "HEAD" || ABSOLUTE_URL_REGEX.test(req.url)) {
+    return next(req);
+  }
+  const token = inject2(HttpXsrfTokenExtractor).getToken();
+  const headerName = inject2(XSRF_HEADER_NAME);
+  if (token != null && !req.headers.has(headerName)) {
+    req = req.clone({
+      headers: req.headers.set(headerName, token)
+    });
+  }
+  return next(req);
+}
+var HttpXsrfInterceptor = class _HttpXsrfInterceptor {
+  injector = inject2(EnvironmentInjector);
+  intercept(initialRequest, next) {
+    return runInInjectionContext(this.injector, () => xsrfInterceptorFn(initialRequest, (downstreamRequest) => next.handle(downstreamRequest)));
+  }
+  static \u0275fac = function HttpXsrfInterceptor_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpXsrfInterceptor)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _HttpXsrfInterceptor,
+    factory: _HttpXsrfInterceptor.\u0275fac
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpXsrfInterceptor, [{
+    type: Injectable
+  }], null, null);
+})();
+var HttpFeatureKind;
+(function(HttpFeatureKind2) {
+  HttpFeatureKind2[HttpFeatureKind2["Interceptors"] = 0] = "Interceptors";
+  HttpFeatureKind2[HttpFeatureKind2["LegacyInterceptors"] = 1] = "LegacyInterceptors";
+  HttpFeatureKind2[HttpFeatureKind2["CustomXsrfConfiguration"] = 2] = "CustomXsrfConfiguration";
+  HttpFeatureKind2[HttpFeatureKind2["NoXsrfProtection"] = 3] = "NoXsrfProtection";
+  HttpFeatureKind2[HttpFeatureKind2["JsonpSupport"] = 4] = "JsonpSupport";
+  HttpFeatureKind2[HttpFeatureKind2["RequestsMadeViaParent"] = 5] = "RequestsMadeViaParent";
+  HttpFeatureKind2[HttpFeatureKind2["Fetch"] = 6] = "Fetch";
+})(HttpFeatureKind || (HttpFeatureKind = {}));
+function makeHttpFeature(kind, providers) {
+  return {
+    \u0275kind: kind,
+    \u0275providers: providers
+  };
+}
+function provideHttpClient(...features) {
+  if (ngDevMode) {
+    const featureKinds = new Set(features.map((f) => f.\u0275kind));
+    if (featureKinds.has(HttpFeatureKind.NoXsrfProtection) && featureKinds.has(HttpFeatureKind.CustomXsrfConfiguration)) {
+      throw new Error(ngDevMode ? `Configuration error: found both withXsrfConfiguration() and withNoXsrfProtection() in the same call to provideHttpClient(), which is a contradiction.` : "");
+    }
+  }
+  const providers = [HttpClient, HttpInterceptorHandler, {
+    provide: HttpHandler,
+    useExisting: HttpInterceptorHandler
+  }, {
+    provide: HttpBackend,
+    useFactory: () => {
+      return inject2(FETCH_BACKEND, {
+        optional: true
+      }) ?? inject2(HttpXhrBackend);
+    }
+  }, {
+    provide: HTTP_INTERCEPTOR_FNS,
+    useValue: xsrfInterceptorFn,
+    multi: true
+  }];
+  for (const feature of features) {
+    providers.push(...feature.\u0275providers);
+  }
+  return makeEnvironmentProviders(providers);
+}
+var LEGACY_INTERCEPTOR_FN = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "LEGACY_INTERCEPTOR_FN" : "");
+function withInterceptorsFromDi() {
+  return makeHttpFeature(HttpFeatureKind.LegacyInterceptors, [{
+    provide: LEGACY_INTERCEPTOR_FN,
+    useFactory: legacyInterceptorFnFactory
+  }, {
+    provide: HTTP_INTERCEPTOR_FNS,
+    useExisting: LEGACY_INTERCEPTOR_FN,
+    multi: true
+  }]);
+}
+function withXsrfConfiguration({
+  cookieName,
+  headerName
+}) {
+  const providers = [];
+  if (cookieName !== void 0) {
+    providers.push({
+      provide: XSRF_COOKIE_NAME,
+      useValue: cookieName
+    });
+  }
+  if (headerName !== void 0) {
+    providers.push({
+      provide: XSRF_HEADER_NAME,
+      useValue: headerName
+    });
+  }
+  return makeHttpFeature(HttpFeatureKind.CustomXsrfConfiguration, providers);
+}
+function withNoXsrfProtection() {
+  return makeHttpFeature(HttpFeatureKind.NoXsrfProtection, [{
+    provide: XSRF_ENABLED,
+    useValue: false
+  }]);
+}
+function withJsonpSupport() {
+  return makeHttpFeature(HttpFeatureKind.JsonpSupport, [JsonpClientBackend, {
+    provide: JsonpCallbackContext,
+    useFactory: jsonpCallbackContext
+  }, {
+    provide: HTTP_INTERCEPTOR_FNS,
+    useValue: jsonpInterceptorFn,
+    multi: true
+  }]);
+}
+var HttpClientXsrfModule = class _HttpClientXsrfModule {
+  static disable() {
+    return {
+      ngModule: _HttpClientXsrfModule,
+      providers: [withNoXsrfProtection().\u0275providers]
+    };
+  }
+  static withOptions(options = {}) {
+    return {
+      ngModule: _HttpClientXsrfModule,
+      providers: withXsrfConfiguration(options).\u0275providers
+    };
+  }
+  static \u0275fac = function HttpClientXsrfModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpClientXsrfModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _HttpClientXsrfModule
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    providers: [HttpXsrfInterceptor, {
+      provide: HTTP_INTERCEPTORS,
+      useExisting: HttpXsrfInterceptor,
+      multi: true
+    }, {
+      provide: HttpXsrfTokenExtractor,
+      useClass: HttpXsrfCookieExtractor
+    }, withXsrfConfiguration({
+      cookieName: XSRF_DEFAULT_COOKIE_NAME,
+      headerName: XSRF_DEFAULT_HEADER_NAME
+    }).\u0275providers, {
+      provide: XSRF_ENABLED,
+      useValue: true
+    }]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpClientXsrfModule, [{
+    type: NgModule,
+    args: [{
+      providers: [HttpXsrfInterceptor, {
+        provide: HTTP_INTERCEPTORS,
+        useExisting: HttpXsrfInterceptor,
+        multi: true
+      }, {
+        provide: HttpXsrfTokenExtractor,
+        useClass: HttpXsrfCookieExtractor
+      }, withXsrfConfiguration({
+        cookieName: XSRF_DEFAULT_COOKIE_NAME,
+        headerName: XSRF_DEFAULT_HEADER_NAME
+      }).\u0275providers, {
+        provide: XSRF_ENABLED,
+        useValue: true
+      }]
+    }]
+  }], null, null);
+})();
+var HttpClientModule = class _HttpClientModule {
+  static \u0275fac = function HttpClientModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpClientModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _HttpClientModule
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    providers: [provideHttpClient(withInterceptorsFromDi())]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpClientModule, [{
+    type: NgModule,
+    args: [{
+      providers: [provideHttpClient(withInterceptorsFromDi())]
+    }]
+  }], null, null);
+})();
+var HttpClientJsonpModule = class _HttpClientJsonpModule {
+  static \u0275fac = function HttpClientJsonpModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _HttpClientJsonpModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _HttpClientJsonpModule
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    providers: [withJsonpSupport().\u0275providers]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(HttpClientJsonpModule, [{
+    type: NgModule,
+    args: [{
+      providers: [withJsonpSupport().\u0275providers]
+    }]
+  }], null, null);
+})();
+
+// node_modules/@angular/common/fesm2022/http.mjs
+var httpResource = (() => {
+  const jsonFn = makeHttpResourceFn("json");
+  jsonFn.arrayBuffer = makeHttpResourceFn("arraybuffer");
+  jsonFn.blob = makeHttpResourceFn("blob");
+  jsonFn.text = makeHttpResourceFn("text");
+  return jsonFn;
+})();
+function makeHttpResourceFn(responseType) {
+  return function httpResource2(request, options) {
+    if (ngDevMode && !options?.injector) {
+      assertInInjectionContext(httpResource2);
+    }
+    const injector = options?.injector ?? inject2(Injector);
+    return new HttpResourceImpl(injector, () => normalizeRequest(request, responseType), options?.defaultValue, options?.debugName, options?.parse, options?.equal);
+  };
+}
+function normalizeRequest(request, responseType) {
+  let unwrappedRequest = typeof request === "function" ? request() : request;
+  if (unwrappedRequest === void 0) {
+    return void 0;
+  } else if (typeof unwrappedRequest === "string") {
+    unwrappedRequest = {
+      url: unwrappedRequest
+    };
+  }
+  const headers = unwrappedRequest.headers instanceof HttpHeaders ? unwrappedRequest.headers : new HttpHeaders(unwrappedRequest.headers);
+  const params = unwrappedRequest.params instanceof HttpParams ? unwrappedRequest.params : new HttpParams({
+    fromObject: unwrappedRequest.params
+  });
+  return new HttpRequest(unwrappedRequest.method ?? "GET", unwrappedRequest.url, unwrappedRequest.body ?? null, {
+    headers,
+    params,
+    reportProgress: unwrappedRequest.reportProgress,
+    withCredentials: unwrappedRequest.withCredentials,
+    keepalive: unwrappedRequest.keepalive,
+    cache: unwrappedRequest.cache,
+    priority: unwrappedRequest.priority,
+    mode: unwrappedRequest.mode,
+    redirect: unwrappedRequest.redirect,
+    responseType,
+    context: unwrappedRequest.context,
+    transferCache: unwrappedRequest.transferCache,
+    credentials: unwrappedRequest.credentials,
+    referrer: unwrappedRequest.referrer,
+    referrerPolicy: unwrappedRequest.referrerPolicy,
+    integrity: unwrappedRequest.integrity,
+    timeout: unwrappedRequest.timeout
+  });
+}
+var HttpResourceImpl = class extends ResourceImpl {
+  client;
+  _headers = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
+    debugName: "_headers"
+  } : {}), {
+    source: this.extRequest,
+    computation: () => void 0
+  }));
+  _progress = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
+    debugName: "_progress"
+  } : {}), {
+    source: this.extRequest,
+    computation: () => void 0
+  }));
+  _statusCode = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
+    debugName: "_statusCode"
+  } : {}), {
+    source: this.extRequest,
+    computation: () => void 0
+  }));
+  headers = computed(() => this.status() === "resolved" || this.status() === "error" ? this._headers() : void 0, __spreadValues({}, ngDevMode ? {
+    debugName: "headers"
+  } : {}));
+  progress = this._progress.asReadonly();
+  statusCode = this._statusCode.asReadonly();
+  constructor(injector, request, defaultValue, debugName, parse, equal) {
+    super(request, ({
+      params: request2,
+      abortSignal
+    }) => {
+      let sub;
+      const onAbort = () => sub.unsubscribe();
+      abortSignal.addEventListener("abort", onAbort);
+      const stream = signal({
+        value: void 0
+      }, __spreadValues({}, ngDevMode ? {
+        debugName: "stream"
+      } : {}));
+      let resolve;
+      const promise = new Promise((r) => resolve = r);
+      const send = (value) => {
+        stream.set(value);
+        resolve?.(stream);
+        resolve = void 0;
+      };
+      sub = this.client.request(request2).subscribe({
+        next: (event) => {
+          switch (event.type) {
+            case HttpEventType.Response:
+              this._headers.set(event.headers);
+              this._statusCode.set(event.status);
+              try {
+                send({
+                  value: parse ? parse(event.body) : event.body
+                });
+              } catch (error) {
+                send({
+                  error: encapsulateResourceError(error)
+                });
+              }
+              break;
+            case HttpEventType.DownloadProgress:
+              this._progress.set(event);
+              break;
+          }
+        },
+        error: (error) => {
+          if (error instanceof HttpErrorResponse) {
+            this._headers.set(error.headers);
+            this._statusCode.set(error.status);
+          }
+          send({
+            error
+          });
+          abortSignal.removeEventListener("abort", onAbort);
+        },
+        complete: () => {
+          if (resolve) {
+            send({
+              error: new RuntimeError(991, ngDevMode && "Resource completed before producing a value")
+            });
+          }
+          abortSignal.removeEventListener("abort", onAbort);
+        }
+      });
+      return promise;
+    }, defaultValue, equal, debugName, injector);
+    this.client = injector.get(HttpClient);
+  }
+  set(value) {
+    super.set(value);
+    this._headers.set(void 0);
+    this._progress.set(void 0);
+    this._statusCode.set(void 0);
+  }
+};
+var HTTP_TRANSFER_CACHE_ORIGIN_MAP = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "HTTP_TRANSFER_CACHE_ORIGIN_MAP" : "");
+var CACHE_OPTIONS = new InjectionToken(typeof ngDevMode !== void 0 && ngDevMode ? "HTTP_TRANSFER_STATE_CACHE_OPTIONS" : "");
+
 // node_modules/@angular/platform-browser/fesm2022/platform-browser.mjs
 var Meta = class _Meta {
   _doc;
@@ -32919,7 +35423,7 @@ function createRenderPromise(injector) {
     });
   });
 }
-var noop3 = () => {
+var noop4 = () => {
 };
 var NAVIGATION_ERROR_HANDLER = new InjectionToken(typeof ngDevMode === "undefined" || ngDevMode ? "navigation error handler" : "");
 var NavigationTransitions = class _NavigationTransitions {
@@ -33156,7 +35660,7 @@ var NavigationTransitions = class _NavigationTransitions {
         next: (t) => {
           completedOrAborted = true;
           this.currentNavigation.update((nav) => {
-            nav.abort = noop3;
+            nav.abort = noop4;
             return nav;
           });
           this.lastSuccessfulNavigation.set(untracked2(this.currentNavigation));
@@ -39202,6 +41706,26 @@ var PortalModule = class _PortalModule {
   }], null, null);
 })();
 
+// node_modules/@angular/cdk/fesm2022/private.mjs
+var policy2;
+function getPolicy2() {
+  if (policy2 === void 0) {
+    policy2 = null;
+    if (typeof window !== "undefined") {
+      const ttWindow = window;
+      if (ttWindow.trustedTypes !== void 0) {
+        policy2 = ttWindow.trustedTypes.createPolicy("angular#components", {
+          createHTML: (s) => s
+        });
+      }
+    }
+  }
+  return policy2;
+}
+function trustedHTMLFromString2(html) {
+  return getPolicy2()?.createHTML(html) || html;
+}
+
 // node_modules/@angular/material/fesm2022/_structural-styles-chunk.mjs
 var _StructuralStylesLoader = class __StructuralStylesLoader {
   static \u0275fac = function _StructuralStylesLoader_Factory(__ngFactoryType__) {
@@ -42211,6 +44735,1574 @@ var MatTabsModule = class _MatTabsModule {
   }], null, null);
 })();
 
+// node_modules/@angular/material/fesm2022/_icon-registry-chunk.mjs
+function getMatIconNameNotFoundError(iconName) {
+  return Error(`Unable to find icon with the name "${iconName}"`);
+}
+function getMatIconNoHttpProviderError() {
+  return Error("Could not find HttpClient for use with Angular Material icons. Please add provideHttpClient() to your providers.");
+}
+function getMatIconFailedToSanitizeUrlError(url) {
+  return Error(`The URL provided to MatIconRegistry was not trusted as a resource URL via Angular's DomSanitizer. Attempted URL was "${url}".`);
+}
+function getMatIconFailedToSanitizeLiteralError(literal) {
+  return Error(`The literal provided to MatIconRegistry was not trusted as safe HTML by Angular's DomSanitizer. Attempted literal was "${literal}".`);
+}
+var SvgIconConfig = class {
+  url;
+  svgText;
+  options;
+  svgElement;
+  constructor(url, svgText, options) {
+    this.url = url;
+    this.svgText = svgText;
+    this.options = options;
+  }
+};
+var MatIconRegistry = class _MatIconRegistry {
+  _httpClient;
+  _sanitizer;
+  _errorHandler;
+  _document;
+  _svgIconConfigs = /* @__PURE__ */ new Map();
+  _iconSetConfigs = /* @__PURE__ */ new Map();
+  _cachedIconsByUrl = /* @__PURE__ */ new Map();
+  _inProgressUrlFetches = /* @__PURE__ */ new Map();
+  _fontCssClassesByAlias = /* @__PURE__ */ new Map();
+  _resolvers = [];
+  _defaultFontSetClass = ["material-icons", "mat-ligature-font"];
+  constructor(_httpClient, _sanitizer, document2, _errorHandler) {
+    this._httpClient = _httpClient;
+    this._sanitizer = _sanitizer;
+    this._errorHandler = _errorHandler;
+    this._document = document2;
+  }
+  addSvgIcon(iconName, url, options) {
+    return this.addSvgIconInNamespace("", iconName, url, options);
+  }
+  addSvgIconLiteral(iconName, literal, options) {
+    return this.addSvgIconLiteralInNamespace("", iconName, literal, options);
+  }
+  addSvgIconInNamespace(namespace, iconName, url, options) {
+    return this._addSvgIconConfig(namespace, iconName, new SvgIconConfig(url, null, options));
+  }
+  addSvgIconResolver(resolver) {
+    this._resolvers.push(resolver);
+    return this;
+  }
+  addSvgIconLiteralInNamespace(namespace, iconName, literal, options) {
+    const cleanLiteral = this._sanitizer.sanitize(SecurityContext.HTML, literal);
+    if (!cleanLiteral) {
+      throw getMatIconFailedToSanitizeLiteralError(literal);
+    }
+    const trustedLiteral = trustedHTMLFromString2(cleanLiteral);
+    return this._addSvgIconConfig(namespace, iconName, new SvgIconConfig("", trustedLiteral, options));
+  }
+  addSvgIconSet(url, options) {
+    return this.addSvgIconSetInNamespace("", url, options);
+  }
+  addSvgIconSetLiteral(literal, options) {
+    return this.addSvgIconSetLiteralInNamespace("", literal, options);
+  }
+  addSvgIconSetInNamespace(namespace, url, options) {
+    return this._addSvgIconSetConfig(namespace, new SvgIconConfig(url, null, options));
+  }
+  addSvgIconSetLiteralInNamespace(namespace, literal, options) {
+    const cleanLiteral = this._sanitizer.sanitize(SecurityContext.HTML, literal);
+    if (!cleanLiteral) {
+      throw getMatIconFailedToSanitizeLiteralError(literal);
+    }
+    const trustedLiteral = trustedHTMLFromString2(cleanLiteral);
+    return this._addSvgIconSetConfig(namespace, new SvgIconConfig("", trustedLiteral, options));
+  }
+  registerFontClassAlias(alias, classNames = alias) {
+    this._fontCssClassesByAlias.set(alias, classNames);
+    return this;
+  }
+  classNameForFontAlias(alias) {
+    return this._fontCssClassesByAlias.get(alias) || alias;
+  }
+  setDefaultFontSetClass(...classNames) {
+    this._defaultFontSetClass = classNames;
+    return this;
+  }
+  getDefaultFontSetClass() {
+    return this._defaultFontSetClass;
+  }
+  getSvgIconFromUrl(safeUrl) {
+    const url = this._sanitizer.sanitize(SecurityContext.RESOURCE_URL, safeUrl);
+    if (!url) {
+      throw getMatIconFailedToSanitizeUrlError(safeUrl);
+    }
+    const cachedIcon = this._cachedIconsByUrl.get(url);
+    if (cachedIcon) {
+      return of(cloneSvg(cachedIcon));
+    }
+    return this._loadSvgIconFromConfig(new SvgIconConfig(safeUrl, null)).pipe(tap((svg) => this._cachedIconsByUrl.set(url, svg)), map((svg) => cloneSvg(svg)));
+  }
+  getNamedSvgIcon(name, namespace = "") {
+    const key = iconKey(namespace, name);
+    let config2 = this._svgIconConfigs.get(key);
+    if (config2) {
+      return this._getSvgFromConfig(config2);
+    }
+    config2 = this._getIconConfigFromResolvers(namespace, name);
+    if (config2) {
+      this._svgIconConfigs.set(key, config2);
+      return this._getSvgFromConfig(config2);
+    }
+    const iconSetConfigs = this._iconSetConfigs.get(namespace);
+    if (iconSetConfigs) {
+      return this._getSvgFromIconSetConfigs(name, iconSetConfigs);
+    }
+    return throwError(getMatIconNameNotFoundError(key));
+  }
+  ngOnDestroy() {
+    this._resolvers = [];
+    this._svgIconConfigs.clear();
+    this._iconSetConfigs.clear();
+    this._cachedIconsByUrl.clear();
+  }
+  _getSvgFromConfig(config2) {
+    if (config2.svgText) {
+      return of(cloneSvg(this._svgElementFromConfig(config2)));
+    } else {
+      return this._loadSvgIconFromConfig(config2).pipe(map((svg) => cloneSvg(svg)));
+    }
+  }
+  _getSvgFromIconSetConfigs(name, iconSetConfigs) {
+    const namedIcon = this._extractIconWithNameFromAnySet(name, iconSetConfigs);
+    if (namedIcon) {
+      return of(namedIcon);
+    }
+    const iconSetFetchRequests = iconSetConfigs.filter((iconSetConfig) => !iconSetConfig.svgText).map((iconSetConfig) => {
+      return this._loadSvgIconSetFromConfig(iconSetConfig).pipe(catchError((err) => {
+        const url = this._sanitizer.sanitize(SecurityContext.RESOURCE_URL, iconSetConfig.url);
+        const errorMessage = `Loading icon set URL: ${url} failed: ${err.message}`;
+        this._errorHandler.handleError(new Error(errorMessage));
+        return of(null);
+      }));
+    });
+    return forkJoin(iconSetFetchRequests).pipe(map(() => {
+      const foundIcon = this._extractIconWithNameFromAnySet(name, iconSetConfigs);
+      if (!foundIcon) {
+        throw getMatIconNameNotFoundError(name);
+      }
+      return foundIcon;
+    }));
+  }
+  _extractIconWithNameFromAnySet(iconName, iconSetConfigs) {
+    for (let i = iconSetConfigs.length - 1; i >= 0; i--) {
+      const config2 = iconSetConfigs[i];
+      if (config2.svgText && config2.svgText.toString().indexOf(iconName) > -1) {
+        const svg = this._svgElementFromConfig(config2);
+        const foundIcon = this._extractSvgIconFromSet(svg, iconName, config2.options);
+        if (foundIcon) {
+          return foundIcon;
+        }
+      }
+    }
+    return null;
+  }
+  _loadSvgIconFromConfig(config2) {
+    return this._fetchIcon(config2).pipe(tap((svgText) => config2.svgText = svgText), map(() => this._svgElementFromConfig(config2)));
+  }
+  _loadSvgIconSetFromConfig(config2) {
+    if (config2.svgText) {
+      return of(null);
+    }
+    return this._fetchIcon(config2).pipe(tap((svgText) => config2.svgText = svgText));
+  }
+  _extractSvgIconFromSet(iconSet, iconName, options) {
+    const iconSource = iconSet.querySelector(`[id="${iconName}"]`);
+    if (!iconSource) {
+      return null;
+    }
+    const iconElement = iconSource.cloneNode(true);
+    iconElement.removeAttribute("id");
+    if (iconElement.nodeName.toLowerCase() === "svg") {
+      return this._setSvgAttributes(iconElement, options);
+    }
+    if (iconElement.nodeName.toLowerCase() === "symbol") {
+      return this._setSvgAttributes(this._toSvgElement(iconElement), options);
+    }
+    const svg = this._svgElementFromString(trustedHTMLFromString2("<svg></svg>"));
+    svg.appendChild(iconElement);
+    return this._setSvgAttributes(svg, options);
+  }
+  _svgElementFromString(str) {
+    const div = this._document.createElement("DIV");
+    div.innerHTML = str;
+    const svg = div.querySelector("svg");
+    if (!svg) {
+      throw Error("<svg> tag not found");
+    }
+    return svg;
+  }
+  _toSvgElement(element) {
+    const svg = this._svgElementFromString(trustedHTMLFromString2("<svg></svg>"));
+    const attributes = element.attributes;
+    for (let i = 0; i < attributes.length; i++) {
+      const {
+        name,
+        value
+      } = attributes[i];
+      if (name !== "id") {
+        svg.setAttribute(name, value);
+      }
+    }
+    for (let i = 0; i < element.childNodes.length; i++) {
+      if (element.childNodes[i].nodeType === this._document.ELEMENT_NODE) {
+        svg.appendChild(element.childNodes[i].cloneNode(true));
+      }
+    }
+    return svg;
+  }
+  _setSvgAttributes(svg, options) {
+    svg.setAttribute("fit", "");
+    svg.setAttribute("height", "100%");
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.setAttribute("focusable", "false");
+    if (options && options.viewBox) {
+      svg.setAttribute("viewBox", options.viewBox);
+    }
+    return svg;
+  }
+  _fetchIcon(iconConfig) {
+    const {
+      url: safeUrl,
+      options
+    } = iconConfig;
+    const withCredentials = options?.withCredentials ?? false;
+    if (!this._httpClient) {
+      throw getMatIconNoHttpProviderError();
+    }
+    if (safeUrl == null) {
+      throw Error(`Cannot fetch icon from URL "${safeUrl}".`);
+    }
+    const url = this._sanitizer.sanitize(SecurityContext.RESOURCE_URL, safeUrl);
+    if (!url) {
+      throw getMatIconFailedToSanitizeUrlError(safeUrl);
+    }
+    const inProgressFetch = this._inProgressUrlFetches.get(url);
+    if (inProgressFetch) {
+      return inProgressFetch;
+    }
+    const req = this._httpClient.get(url, {
+      responseType: "text",
+      withCredentials
+    }).pipe(map((svg) => {
+      return trustedHTMLFromString2(svg);
+    }), finalize(() => this._inProgressUrlFetches.delete(url)), share());
+    this._inProgressUrlFetches.set(url, req);
+    return req;
+  }
+  _addSvgIconConfig(namespace, iconName, config2) {
+    this._svgIconConfigs.set(iconKey(namespace, iconName), config2);
+    return this;
+  }
+  _addSvgIconSetConfig(namespace, config2) {
+    const configNamespace = this._iconSetConfigs.get(namespace);
+    if (configNamespace) {
+      configNamespace.push(config2);
+    } else {
+      this._iconSetConfigs.set(namespace, [config2]);
+    }
+    return this;
+  }
+  _svgElementFromConfig(config2) {
+    if (!config2.svgElement) {
+      const svg = this._svgElementFromString(config2.svgText);
+      this._setSvgAttributes(svg, config2.options);
+      config2.svgElement = svg;
+    }
+    return config2.svgElement;
+  }
+  _getIconConfigFromResolvers(namespace, name) {
+    for (let i = 0; i < this._resolvers.length; i++) {
+      const result = this._resolvers[i](name, namespace);
+      if (result) {
+        return isSafeUrlWithOptions(result) ? new SvgIconConfig(result.url, null, result.options) : new SvgIconConfig(result, null);
+      }
+    }
+    return void 0;
+  }
+  static \u0275fac = function MatIconRegistry_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatIconRegistry)(\u0275\u0275inject(HttpClient, 8), \u0275\u0275inject(DomSanitizer), \u0275\u0275inject(DOCUMENT, 8), \u0275\u0275inject(ErrorHandler));
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _MatIconRegistry,
+    factory: _MatIconRegistry.\u0275fac,
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatIconRegistry, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root"
+    }]
+  }], () => [{
+    type: HttpClient,
+    decorators: [{
+      type: Optional
+    }]
+  }, {
+    type: DomSanitizer
+  }, {
+    type: void 0,
+    decorators: [{
+      type: Optional
+    }, {
+      type: Inject,
+      args: [DOCUMENT]
+    }]
+  }, {
+    type: ErrorHandler
+  }], null);
+})();
+function cloneSvg(svg) {
+  return svg.cloneNode(true);
+}
+function iconKey(namespace, name) {
+  return namespace + ":" + name;
+}
+function isSafeUrlWithOptions(value) {
+  return !!(value.url && value.options);
+}
+
+// node_modules/@angular/material/fesm2022/icon.mjs
+var _c03 = ["*"];
+var MAT_ICON_DEFAULT_OPTIONS = new InjectionToken("MAT_ICON_DEFAULT_OPTIONS");
+var MAT_ICON_LOCATION = new InjectionToken("mat-icon-location", {
+  providedIn: "root",
+  factory: () => {
+    const _document2 = inject2(DOCUMENT);
+    const _location = _document2 ? _document2.location : null;
+    return {
+      getPathname: () => _location ? _location.pathname + _location.search : ""
+    };
+  }
+});
+var funcIriAttributes = ["clip-path", "color-profile", "src", "cursor", "fill", "filter", "marker", "marker-start", "marker-mid", "marker-end", "mask", "stroke"];
+var funcIriAttributeSelector = funcIriAttributes.map((attr) => `[${attr}]`).join(", ");
+var funcIriPattern = /^url\(['"]?#(.*?)['"]?\)$/;
+var MatIcon = class _MatIcon {
+  _elementRef = inject2(ElementRef);
+  _iconRegistry = inject2(MatIconRegistry);
+  _location = inject2(MAT_ICON_LOCATION);
+  _errorHandler = inject2(ErrorHandler);
+  _defaultColor;
+  get color() {
+    return this._color || this._defaultColor;
+  }
+  set color(value) {
+    this._color = value;
+  }
+  _color;
+  inline = false;
+  get svgIcon() {
+    return this._svgIcon;
+  }
+  set svgIcon(value) {
+    if (value !== this._svgIcon) {
+      if (value) {
+        this._updateSvgIcon(value);
+      } else if (this._svgIcon) {
+        this._clearSvgElement();
+      }
+      this._svgIcon = value;
+    }
+  }
+  _svgIcon;
+  get fontSet() {
+    return this._fontSet;
+  }
+  set fontSet(value) {
+    const newValue = this._cleanupFontValue(value);
+    if (newValue !== this._fontSet) {
+      this._fontSet = newValue;
+      this._updateFontIconClasses();
+    }
+  }
+  _fontSet;
+  get fontIcon() {
+    return this._fontIcon;
+  }
+  set fontIcon(value) {
+    const newValue = this._cleanupFontValue(value);
+    if (newValue !== this._fontIcon) {
+      this._fontIcon = newValue;
+      this._updateFontIconClasses();
+    }
+  }
+  _fontIcon;
+  _previousFontSetClass = [];
+  _previousFontIconClass;
+  _svgName;
+  _svgNamespace;
+  _previousPath;
+  _elementsWithExternalReferences;
+  _currentIconFetch = Subscription.EMPTY;
+  constructor() {
+    const ariaHidden = inject2(new HostAttributeToken("aria-hidden"), {
+      optional: true
+    });
+    const defaults2 = inject2(MAT_ICON_DEFAULT_OPTIONS, {
+      optional: true
+    });
+    if (defaults2) {
+      if (defaults2.color) {
+        this.color = this._defaultColor = defaults2.color;
+      }
+      if (defaults2.fontSet) {
+        this.fontSet = defaults2.fontSet;
+      }
+    }
+    if (!ariaHidden) {
+      this._elementRef.nativeElement.setAttribute("aria-hidden", "true");
+    }
+  }
+  _splitIconName(iconName) {
+    if (!iconName) {
+      return ["", ""];
+    }
+    const parts = iconName.split(":");
+    switch (parts.length) {
+      case 1:
+        return ["", parts[0]];
+      case 2:
+        return parts;
+      default:
+        throw Error(`Invalid icon name: "${iconName}"`);
+    }
+  }
+  ngOnInit() {
+    this._updateFontIconClasses();
+  }
+  ngAfterViewChecked() {
+    const cachedElements = this._elementsWithExternalReferences;
+    if (cachedElements && cachedElements.size) {
+      const newPath = this._location.getPathname();
+      if (newPath !== this._previousPath) {
+        this._previousPath = newPath;
+        this._prependPathToReferences(newPath);
+      }
+    }
+  }
+  ngOnDestroy() {
+    this._currentIconFetch.unsubscribe();
+    if (this._elementsWithExternalReferences) {
+      this._elementsWithExternalReferences.clear();
+    }
+  }
+  _usingFontIcon() {
+    return !this.svgIcon;
+  }
+  _setSvgElement(svg) {
+    this._clearSvgElement();
+    const path = this._location.getPathname();
+    this._previousPath = path;
+    this._cacheChildrenWithExternalReferences(svg);
+    this._prependPathToReferences(path);
+    this._elementRef.nativeElement.appendChild(svg);
+  }
+  _clearSvgElement() {
+    const layoutElement = this._elementRef.nativeElement;
+    let childCount = layoutElement.childNodes.length;
+    if (this._elementsWithExternalReferences) {
+      this._elementsWithExternalReferences.clear();
+    }
+    while (childCount--) {
+      const child = layoutElement.childNodes[childCount];
+      if (child.nodeType !== 1 || child.nodeName.toLowerCase() === "svg") {
+        child.remove();
+      }
+    }
+  }
+  _updateFontIconClasses() {
+    if (!this._usingFontIcon()) {
+      return;
+    }
+    const elem = this._elementRef.nativeElement;
+    const fontSetClasses = (this.fontSet ? this._iconRegistry.classNameForFontAlias(this.fontSet).split(/ +/) : this._iconRegistry.getDefaultFontSetClass()).filter((className) => className.length > 0);
+    this._previousFontSetClass.forEach((className) => elem.classList.remove(className));
+    fontSetClasses.forEach((className) => elem.classList.add(className));
+    this._previousFontSetClass = fontSetClasses;
+    if (this.fontIcon !== this._previousFontIconClass && !fontSetClasses.includes("mat-ligature-font")) {
+      if (this._previousFontIconClass) {
+        elem.classList.remove(this._previousFontIconClass);
+      }
+      if (this.fontIcon) {
+        elem.classList.add(this.fontIcon);
+      }
+      this._previousFontIconClass = this.fontIcon;
+    }
+  }
+  _cleanupFontValue(value) {
+    return typeof value === "string" ? value.trim().split(" ")[0] : value;
+  }
+  _prependPathToReferences(path) {
+    const elements = this._elementsWithExternalReferences;
+    if (elements) {
+      elements.forEach((attrs, element) => {
+        attrs.forEach((attr) => {
+          element.setAttribute(attr.name, `url('${path}#${attr.value}')`);
+        });
+      });
+    }
+  }
+  _cacheChildrenWithExternalReferences(element) {
+    const elementsWithFuncIri = element.querySelectorAll(funcIriAttributeSelector);
+    const elements = this._elementsWithExternalReferences = this._elementsWithExternalReferences || /* @__PURE__ */ new Map();
+    for (let i = 0; i < elementsWithFuncIri.length; i++) {
+      funcIriAttributes.forEach((attr) => {
+        const elementWithReference = elementsWithFuncIri[i];
+        const value = elementWithReference.getAttribute(attr);
+        const match2 = value ? value.match(funcIriPattern) : null;
+        if (match2) {
+          let attributes = elements.get(elementWithReference);
+          if (!attributes) {
+            attributes = [];
+            elements.set(elementWithReference, attributes);
+          }
+          attributes.push({
+            name: attr,
+            value: match2[1]
+          });
+        }
+      });
+    }
+  }
+  _updateSvgIcon(rawName) {
+    this._svgNamespace = null;
+    this._svgName = null;
+    this._currentIconFetch.unsubscribe();
+    if (rawName) {
+      const [namespace, iconName] = this._splitIconName(rawName);
+      if (namespace) {
+        this._svgNamespace = namespace;
+      }
+      if (iconName) {
+        this._svgName = iconName;
+      }
+      this._currentIconFetch = this._iconRegistry.getNamedSvgIcon(iconName, namespace).pipe(take(1)).subscribe((svg) => this._setSvgElement(svg), (err) => {
+        const errorMessage = `Error retrieving icon ${namespace}:${iconName}! ${err.message}`;
+        this._errorHandler.handleError(new Error(errorMessage));
+      });
+    }
+  }
+  static \u0275fac = function MatIcon_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatIcon)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({
+    type: _MatIcon,
+    selectors: [["mat-icon"]],
+    hostAttrs: ["role", "img", 1, "mat-icon", "notranslate"],
+    hostVars: 10,
+    hostBindings: function MatIcon_HostBindings(rf, ctx) {
+      if (rf & 2) {
+        \u0275\u0275attribute("data-mat-icon-type", ctx._usingFontIcon() ? "font" : "svg")("data-mat-icon-name", ctx._svgName || ctx.fontIcon)("data-mat-icon-namespace", ctx._svgNamespace || ctx.fontSet)("fontIcon", ctx._usingFontIcon() ? ctx.fontIcon : null);
+        \u0275\u0275classMap(ctx.color ? "mat-" + ctx.color : "");
+        \u0275\u0275classProp("mat-icon-inline", ctx.inline)("mat-icon-no-color", ctx.color !== "primary" && ctx.color !== "accent" && ctx.color !== "warn");
+      }
+    },
+    inputs: {
+      color: "color",
+      inline: [2, "inline", "inline", booleanAttribute],
+      svgIcon: "svgIcon",
+      fontSet: "fontSet",
+      fontIcon: "fontIcon"
+    },
+    exportAs: ["matIcon"],
+    ngContentSelectors: _c03,
+    decls: 1,
+    vars: 0,
+    template: function MatIcon_Template(rf, ctx) {
+      if (rf & 1) {
+        \u0275\u0275projectionDef();
+        \u0275\u0275projection(0);
+      }
+    },
+    styles: ["mat-icon,mat-icon.mat-primary,mat-icon.mat-accent,mat-icon.mat-warn{color:var(--mat-icon-color, inherit)}.mat-icon{-webkit-user-select:none;user-select:none;background-repeat:no-repeat;display:inline-block;fill:currentColor;height:24px;width:24px;overflow:hidden}.mat-icon.mat-icon-inline{font-size:inherit;height:inherit;line-height:inherit;width:inherit}.mat-icon.mat-ligature-font[fontIcon]::before{content:attr(fontIcon)}[dir=rtl] .mat-icon-rtl-mirror{transform:scale(-1, 1)}.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-prefix .mat-icon,.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-suffix .mat-icon{display:block}.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-prefix .mat-icon-button .mat-icon,.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-suffix .mat-icon-button .mat-icon{margin:auto}\n"],
+    encapsulation: 2,
+    changeDetection: 0
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatIcon, [{
+    type: Component,
+    args: [{
+      template: "<ng-content></ng-content>",
+      selector: "mat-icon",
+      exportAs: "matIcon",
+      host: {
+        "role": "img",
+        "class": "mat-icon notranslate",
+        "[class]": 'color ? "mat-" + color : ""',
+        "[attr.data-mat-icon-type]": '_usingFontIcon() ? "font" : "svg"',
+        "[attr.data-mat-icon-name]": "_svgName || fontIcon",
+        "[attr.data-mat-icon-namespace]": "_svgNamespace || fontSet",
+        "[attr.fontIcon]": "_usingFontIcon() ? fontIcon : null",
+        "[class.mat-icon-inline]": "inline",
+        "[class.mat-icon-no-color]": 'color !== "primary" && color !== "accent" && color !== "warn"'
+      },
+      encapsulation: ViewEncapsulation.None,
+      changeDetection: ChangeDetectionStrategy.OnPush,
+      styles: ["mat-icon,mat-icon.mat-primary,mat-icon.mat-accent,mat-icon.mat-warn{color:var(--mat-icon-color, inherit)}.mat-icon{-webkit-user-select:none;user-select:none;background-repeat:no-repeat;display:inline-block;fill:currentColor;height:24px;width:24px;overflow:hidden}.mat-icon.mat-icon-inline{font-size:inherit;height:inherit;line-height:inherit;width:inherit}.mat-icon.mat-ligature-font[fontIcon]::before{content:attr(fontIcon)}[dir=rtl] .mat-icon-rtl-mirror{transform:scale(-1, 1)}.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-prefix .mat-icon,.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-suffix .mat-icon{display:block}.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-prefix .mat-icon-button .mat-icon,.mat-form-field:not(.mat-form-field-appearance-legacy) .mat-form-field-suffix .mat-icon-button .mat-icon{margin:auto}\n"]
+    }]
+  }], () => [], {
+    color: [{
+      type: Input
+    }],
+    inline: [{
+      type: Input,
+      args: [{
+        transform: booleanAttribute
+      }]
+    }],
+    svgIcon: [{
+      type: Input
+    }],
+    fontSet: [{
+      type: Input
+    }],
+    fontIcon: [{
+      type: Input
+    }]
+  });
+})();
+var MatIconModule = class _MatIconModule {
+  static \u0275fac = function MatIconModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatIconModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _MatIconModule,
+    imports: [MatIcon],
+    exports: [MatIcon, BidiModule]
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    imports: [BidiModule]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatIconModule, [{
+    type: NgModule,
+    args: [{
+      imports: [MatIcon],
+      exports: [MatIcon, BidiModule]
+    }]
+  }], null, null);
+})();
+
+// node_modules/@angular/material/fesm2022/_ripple-loader-chunk.mjs
+var eventListenerOptions2 = {
+  capture: true
+};
+var rippleInteractionEvents = ["focus", "mousedown", "mouseenter", "touchstart"];
+var matRippleUninitialized = "mat-ripple-loader-uninitialized";
+var matRippleClassName = "mat-ripple-loader-class-name";
+var matRippleCentered = "mat-ripple-loader-centered";
+var matRippleDisabled = "mat-ripple-loader-disabled";
+var MatRippleLoader = class _MatRippleLoader {
+  _document = inject2(DOCUMENT);
+  _animationsDisabled = _animationsDisabled();
+  _globalRippleOptions = inject2(MAT_RIPPLE_GLOBAL_OPTIONS, {
+    optional: true
+  });
+  _platform = inject2(Platform);
+  _ngZone = inject2(NgZone);
+  _injector = inject2(Injector);
+  _eventCleanups;
+  _hosts = /* @__PURE__ */ new Map();
+  constructor() {
+    const renderer = inject2(RendererFactory2).createRenderer(null, null);
+    this._eventCleanups = this._ngZone.runOutsideAngular(() => rippleInteractionEvents.map((name) => renderer.listen(this._document, name, this._onInteraction, eventListenerOptions2)));
+  }
+  ngOnDestroy() {
+    const hosts = this._hosts.keys();
+    for (const host of hosts) {
+      this.destroyRipple(host);
+    }
+    this._eventCleanups.forEach((cleanup) => cleanup());
+  }
+  configureRipple(host, config2) {
+    host.setAttribute(matRippleUninitialized, this._globalRippleOptions?.namespace ?? "");
+    if (config2.className || !host.hasAttribute(matRippleClassName)) {
+      host.setAttribute(matRippleClassName, config2.className || "");
+    }
+    if (config2.centered) {
+      host.setAttribute(matRippleCentered, "");
+    }
+    if (config2.disabled) {
+      host.setAttribute(matRippleDisabled, "");
+    }
+  }
+  setDisabled(host, disabled) {
+    const ripple = this._hosts.get(host);
+    if (ripple) {
+      ripple.target.rippleDisabled = disabled;
+      if (!disabled && !ripple.hasSetUpEvents) {
+        ripple.hasSetUpEvents = true;
+        ripple.renderer.setupTriggerEvents(host);
+      }
+    } else if (disabled) {
+      host.setAttribute(matRippleDisabled, "");
+    } else {
+      host.removeAttribute(matRippleDisabled);
+    }
+  }
+  _onInteraction = (event) => {
+    const eventTarget = _getEventTarget(event);
+    if (eventTarget instanceof HTMLElement) {
+      const element = eventTarget.closest(`[${matRippleUninitialized}="${this._globalRippleOptions?.namespace ?? ""}"]`);
+      if (element) {
+        this._createRipple(element);
+      }
+    }
+  };
+  _createRipple(host) {
+    if (!this._document || this._hosts.has(host)) {
+      return;
+    }
+    host.querySelector(".mat-ripple")?.remove();
+    const rippleEl = this._document.createElement("span");
+    rippleEl.classList.add("mat-ripple", host.getAttribute(matRippleClassName));
+    host.append(rippleEl);
+    const globalOptions = this._globalRippleOptions;
+    const enterDuration = this._animationsDisabled ? 0 : globalOptions?.animation?.enterDuration ?? defaultRippleAnimationConfig.enterDuration;
+    const exitDuration = this._animationsDisabled ? 0 : globalOptions?.animation?.exitDuration ?? defaultRippleAnimationConfig.exitDuration;
+    const target = {
+      rippleDisabled: this._animationsDisabled || globalOptions?.disabled || host.hasAttribute(matRippleDisabled),
+      rippleConfig: {
+        centered: host.hasAttribute(matRippleCentered),
+        terminateOnPointerUp: globalOptions?.terminateOnPointerUp,
+        animation: {
+          enterDuration,
+          exitDuration
+        }
+      }
+    };
+    const renderer = new RippleRenderer(target, this._ngZone, rippleEl, this._platform, this._injector);
+    const hasSetUpEvents = !target.rippleDisabled;
+    if (hasSetUpEvents) {
+      renderer.setupTriggerEvents(host);
+    }
+    this._hosts.set(host, {
+      target,
+      renderer,
+      hasSetUpEvents
+    });
+    host.removeAttribute(matRippleUninitialized);
+  }
+  destroyRipple(host) {
+    const ripple = this._hosts.get(host);
+    if (ripple) {
+      ripple.renderer._removeTriggerEvents();
+      this._hosts.delete(host);
+    }
+  }
+  static \u0275fac = function MatRippleLoader_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatRippleLoader)();
+  };
+  static \u0275prov = /* @__PURE__ */ \u0275\u0275defineInjectable({
+    token: _MatRippleLoader,
+    factory: _MatRippleLoader.\u0275fac,
+    providedIn: "root"
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatRippleLoader, [{
+    type: Injectable,
+    args: [{
+      providedIn: "root"
+    }]
+  }], () => [], null);
+})();
+
+// node_modules/@angular/material/fesm2022/_icon-button-chunk.mjs
+var _c04 = ["mat-icon-button", ""];
+var _c13 = ["*"];
+var MAT_BUTTON_CONFIG = new InjectionToken("MAT_BUTTON_CONFIG");
+function transformTabIndex(value) {
+  return value == null ? void 0 : numberAttribute(value);
+}
+var MatButtonBase = class _MatButtonBase {
+  _elementRef = inject2(ElementRef);
+  _ngZone = inject2(NgZone);
+  _animationsDisabled = _animationsDisabled();
+  _config = inject2(MAT_BUTTON_CONFIG, {
+    optional: true
+  });
+  _focusMonitor = inject2(FocusMonitor);
+  _cleanupClick;
+  _renderer = inject2(Renderer2);
+  _rippleLoader = inject2(MatRippleLoader);
+  _isAnchor;
+  _isFab = false;
+  color;
+  get disableRipple() {
+    return this._disableRipple;
+  }
+  set disableRipple(value) {
+    this._disableRipple = value;
+    this._updateRippleDisabled();
+  }
+  _disableRipple = false;
+  get disabled() {
+    return this._disabled;
+  }
+  set disabled(value) {
+    this._disabled = value;
+    this._updateRippleDisabled();
+  }
+  _disabled = false;
+  ariaDisabled;
+  disabledInteractive;
+  tabIndex;
+  set _tabindex(value) {
+    this.tabIndex = value;
+  }
+  constructor() {
+    inject2(_CdkPrivateStyleLoader).load(_StructuralStylesLoader);
+    const element = this._elementRef.nativeElement;
+    this._isAnchor = element.tagName === "A";
+    this.disabledInteractive = this._config?.disabledInteractive ?? false;
+    this.color = this._config?.color ?? null;
+    this._rippleLoader?.configureRipple(element, {
+      className: "mat-mdc-button-ripple"
+    });
+  }
+  ngAfterViewInit() {
+    this._focusMonitor.monitor(this._elementRef, true);
+    if (this._isAnchor) {
+      this._setupAsAnchor();
+    }
+  }
+  ngOnDestroy() {
+    this._cleanupClick?.();
+    this._focusMonitor.stopMonitoring(this._elementRef);
+    this._rippleLoader?.destroyRipple(this._elementRef.nativeElement);
+  }
+  focus(origin = "program", options) {
+    if (origin) {
+      this._focusMonitor.focusVia(this._elementRef.nativeElement, origin, options);
+    } else {
+      this._elementRef.nativeElement.focus(options);
+    }
+  }
+  _getAriaDisabled() {
+    if (this.ariaDisabled != null) {
+      return this.ariaDisabled;
+    }
+    if (this._isAnchor) {
+      return this.disabled || null;
+    }
+    return this.disabled && this.disabledInteractive ? true : null;
+  }
+  _getDisabledAttribute() {
+    return this.disabledInteractive || !this.disabled ? null : true;
+  }
+  _updateRippleDisabled() {
+    this._rippleLoader?.setDisabled(this._elementRef.nativeElement, this.disableRipple || this.disabled);
+  }
+  _getTabIndex() {
+    if (this._isAnchor) {
+      return this.disabled && !this.disabledInteractive ? -1 : this.tabIndex;
+    }
+    return this.tabIndex;
+  }
+  _setupAsAnchor() {
+    this._cleanupClick = this._ngZone.runOutsideAngular(() => this._renderer.listen(this._elementRef.nativeElement, "click", (event) => {
+      if (this.disabled) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }));
+  }
+  static \u0275fac = function MatButtonBase_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatButtonBase)();
+  };
+  static \u0275dir = /* @__PURE__ */ \u0275\u0275defineDirective({
+    type: _MatButtonBase,
+    hostAttrs: [1, "mat-mdc-button-base"],
+    hostVars: 13,
+    hostBindings: function MatButtonBase_HostBindings(rf, ctx) {
+      if (rf & 2) {
+        \u0275\u0275attribute("disabled", ctx._getDisabledAttribute())("aria-disabled", ctx._getAriaDisabled())("tabindex", ctx._getTabIndex());
+        \u0275\u0275classMap(ctx.color ? "mat-" + ctx.color : "");
+        \u0275\u0275classProp("mat-mdc-button-disabled", ctx.disabled)("mat-mdc-button-disabled-interactive", ctx.disabledInteractive)("mat-unthemed", !ctx.color)("_mat-animation-noopable", ctx._animationsDisabled);
+      }
+    },
+    inputs: {
+      color: "color",
+      disableRipple: [2, "disableRipple", "disableRipple", booleanAttribute],
+      disabled: [2, "disabled", "disabled", booleanAttribute],
+      ariaDisabled: [2, "aria-disabled", "ariaDisabled", booleanAttribute],
+      disabledInteractive: [2, "disabledInteractive", "disabledInteractive", booleanAttribute],
+      tabIndex: [2, "tabIndex", "tabIndex", transformTabIndex],
+      _tabindex: [2, "tabindex", "_tabindex", transformTabIndex]
+    }
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatButtonBase, [{
+    type: Directive,
+    args: [{
+      host: {
+        "class": "mat-mdc-button-base",
+        "[class]": 'color ? "mat-" + color : ""',
+        "[attr.disabled]": "_getDisabledAttribute()",
+        "[attr.aria-disabled]": "_getAriaDisabled()",
+        "[attr.tabindex]": "_getTabIndex()",
+        "[class.mat-mdc-button-disabled]": "disabled",
+        "[class.mat-mdc-button-disabled-interactive]": "disabledInteractive",
+        "[class.mat-unthemed]": "!color",
+        "[class._mat-animation-noopable]": "_animationsDisabled"
+      }
+    }]
+  }], () => [], {
+    color: [{
+      type: Input
+    }],
+    disableRipple: [{
+      type: Input,
+      args: [{
+        transform: booleanAttribute
+      }]
+    }],
+    disabled: [{
+      type: Input,
+      args: [{
+        transform: booleanAttribute
+      }]
+    }],
+    ariaDisabled: [{
+      type: Input,
+      args: [{
+        transform: booleanAttribute,
+        alias: "aria-disabled"
+      }]
+    }],
+    disabledInteractive: [{
+      type: Input,
+      args: [{
+        transform: booleanAttribute
+      }]
+    }],
+    tabIndex: [{
+      type: Input,
+      args: [{
+        transform: transformTabIndex
+      }]
+    }],
+    _tabindex: [{
+      type: Input,
+      args: [{
+        alias: "tabindex",
+        transform: transformTabIndex
+      }]
+    }]
+  });
+})();
+var MatIconButton = class _MatIconButton extends MatButtonBase {
+  constructor() {
+    super();
+    this._rippleLoader.configureRipple(this._elementRef.nativeElement, {
+      centered: true
+    });
+  }
+  static \u0275fac = function MatIconButton_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatIconButton)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({
+    type: _MatIconButton,
+    selectors: [["button", "mat-icon-button", ""], ["a", "mat-icon-button", ""], ["button", "matIconButton", ""], ["a", "matIconButton", ""]],
+    hostAttrs: [1, "mdc-icon-button", "mat-mdc-icon-button"],
+    exportAs: ["matButton", "matAnchor"],
+    features: [\u0275\u0275InheritDefinitionFeature],
+    attrs: _c04,
+    ngContentSelectors: _c13,
+    decls: 4,
+    vars: 0,
+    consts: [[1, "mat-mdc-button-persistent-ripple", "mdc-icon-button__ripple"], [1, "mat-focus-indicator"], [1, "mat-mdc-button-touch-target"]],
+    template: function MatIconButton_Template(rf, ctx) {
+      if (rf & 1) {
+        \u0275\u0275projectionDef();
+        \u0275\u0275domElement(0, "span", 0);
+        \u0275\u0275projection(1);
+        \u0275\u0275domElement(2, "span", 1)(3, "span", 2);
+      }
+    },
+    styles: ['.mat-mdc-icon-button{-webkit-user-select:none;user-select:none;display:inline-block;position:relative;box-sizing:border-box;border:none;outline:none;background-color:rgba(0,0,0,0);fill:currentColor;text-decoration:none;cursor:pointer;z-index:0;overflow:visible;border-radius:var(--mat-icon-button-container-shape, var(--mat-sys-corner-full, 50%));flex-shrink:0;text-align:center;width:var(--mat-icon-button-state-layer-size, 40px);height:var(--mat-icon-button-state-layer-size, 40px);padding:calc(calc(var(--mat-icon-button-state-layer-size, 40px) - var(--mat-icon-button-icon-size, 24px)) / 2);font-size:var(--mat-icon-button-icon-size, 24px);color:var(--mat-icon-button-icon-color, var(--mat-sys-on-surface-variant));-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-icon-button .mat-mdc-button-ripple,.mat-mdc-icon-button .mat-mdc-button-persistent-ripple,.mat-mdc-icon-button .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-icon-button .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-icon-button .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-icon-button .mdc-button__label,.mat-mdc-icon-button .mat-icon{z-index:1;position:relative}.mat-mdc-icon-button .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute;border-radius:inherit}.mat-mdc-icon-button:focus>.mat-focus-indicator::before{content:"";border-radius:inherit}.mat-mdc-icon-button .mat-ripple-element{background-color:var(--mat-icon-button-ripple-color, color-mix(in srgb, var(--mat-sys-on-surface-variant) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-icon-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-icon-button-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-icon-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-icon-button-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-icon-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-icon-button-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-icon-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-icon-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-icon-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-icon-button-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-icon-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-icon-button-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-icon-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-icon-button-touch-target-size, 48px);display:var(--mat-icon-button-touch-target-display, block);left:50%;width:var(--mat-icon-button-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-icon-button._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-icon-button[disabled],.mat-mdc-icon-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-icon-button-disabled-icon-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent))}.mat-mdc-icon-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-icon-button img,.mat-mdc-icon-button svg{width:var(--mat-icon-button-icon-size, 24px);height:var(--mat-icon-button-icon-size, 24px);vertical-align:baseline}.mat-mdc-icon-button .mat-mdc-button-persistent-ripple{border-radius:var(--mat-icon-button-container-shape, var(--mat-sys-corner-full, 50%))}.mat-mdc-icon-button[hidden]{display:none}.mat-mdc-icon-button.mat-unthemed:not(.mdc-ripple-upgraded):focus::before,.mat-mdc-icon-button.mat-primary:not(.mdc-ripple-upgraded):focus::before,.mat-mdc-icon-button.mat-accent:not(.mdc-ripple-upgraded):focus::before,.mat-mdc-icon-button.mat-warn:not(.mdc-ripple-upgraded):focus::before{background:rgba(0,0,0,0);opacity:1}\n', "@media(forced-colors: active){.mat-mdc-button:not(.mdc-button--outlined),.mat-mdc-unelevated-button:not(.mdc-button--outlined),.mat-mdc-raised-button:not(.mdc-button--outlined),.mat-mdc-outlined-button:not(.mdc-button--outlined),.mat-mdc-button-base.mat-tonal-button,.mat-mdc-icon-button.mat-mdc-icon-button,.mat-mdc-outlined-button .mdc-button__ripple{outline:solid 1px}}\n"],
+    encapsulation: 2,
+    changeDetection: 0
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatIconButton, [{
+    type: Component,
+    args: [{
+      selector: `button[mat-icon-button], a[mat-icon-button], button[matIconButton], a[matIconButton]`,
+      host: {
+        "class": "mdc-icon-button mat-mdc-icon-button"
+      },
+      exportAs: "matButton, matAnchor",
+      encapsulation: ViewEncapsulation.None,
+      changeDetection: ChangeDetectionStrategy.OnPush,
+      template: `<span class="mat-mdc-button-persistent-ripple mdc-icon-button__ripple"></span>
+
+<ng-content></ng-content>
+
+<!--
+  The indicator can't be directly on the button, because MDC uses ::before for high contrast
+  indication and it can't be on the ripple, because it has a border radius and overflow: hidden.
+-->
+<span class="mat-focus-indicator"></span>
+
+<span class="mat-mdc-button-touch-target"></span>
+`,
+      styles: ['.mat-mdc-icon-button{-webkit-user-select:none;user-select:none;display:inline-block;position:relative;box-sizing:border-box;border:none;outline:none;background-color:rgba(0,0,0,0);fill:currentColor;text-decoration:none;cursor:pointer;z-index:0;overflow:visible;border-radius:var(--mat-icon-button-container-shape, var(--mat-sys-corner-full, 50%));flex-shrink:0;text-align:center;width:var(--mat-icon-button-state-layer-size, 40px);height:var(--mat-icon-button-state-layer-size, 40px);padding:calc(calc(var(--mat-icon-button-state-layer-size, 40px) - var(--mat-icon-button-icon-size, 24px)) / 2);font-size:var(--mat-icon-button-icon-size, 24px);color:var(--mat-icon-button-icon-color, var(--mat-sys-on-surface-variant));-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-icon-button .mat-mdc-button-ripple,.mat-mdc-icon-button .mat-mdc-button-persistent-ripple,.mat-mdc-icon-button .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-icon-button .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-icon-button .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-icon-button .mdc-button__label,.mat-mdc-icon-button .mat-icon{z-index:1;position:relative}.mat-mdc-icon-button .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute;border-radius:inherit}.mat-mdc-icon-button:focus>.mat-focus-indicator::before{content:"";border-radius:inherit}.mat-mdc-icon-button .mat-ripple-element{background-color:var(--mat-icon-button-ripple-color, color-mix(in srgb, var(--mat-sys-on-surface-variant) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-icon-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-icon-button-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-icon-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-icon-button-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-icon-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-icon-button-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-icon-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-icon-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-icon-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-icon-button-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-icon-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-icon-button-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-icon-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-icon-button-touch-target-size, 48px);display:var(--mat-icon-button-touch-target-display, block);left:50%;width:var(--mat-icon-button-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-icon-button._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-icon-button[disabled],.mat-mdc-icon-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-icon-button-disabled-icon-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent))}.mat-mdc-icon-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-icon-button img,.mat-mdc-icon-button svg{width:var(--mat-icon-button-icon-size, 24px);height:var(--mat-icon-button-icon-size, 24px);vertical-align:baseline}.mat-mdc-icon-button .mat-mdc-button-persistent-ripple{border-radius:var(--mat-icon-button-container-shape, var(--mat-sys-corner-full, 50%))}.mat-mdc-icon-button[hidden]{display:none}.mat-mdc-icon-button.mat-unthemed:not(.mdc-ripple-upgraded):focus::before,.mat-mdc-icon-button.mat-primary:not(.mdc-ripple-upgraded):focus::before,.mat-mdc-icon-button.mat-accent:not(.mdc-ripple-upgraded):focus::before,.mat-mdc-icon-button.mat-warn:not(.mdc-ripple-upgraded):focus::before{background:rgba(0,0,0,0);opacity:1}\n', "@media(forced-colors: active){.mat-mdc-button:not(.mdc-button--outlined),.mat-mdc-unelevated-button:not(.mdc-button--outlined),.mat-mdc-raised-button:not(.mdc-button--outlined),.mat-mdc-outlined-button:not(.mdc-button--outlined),.mat-mdc-button-base.mat-tonal-button,.mat-mdc-icon-button.mat-mdc-icon-button,.mat-mdc-outlined-button .mdc-button__ripple{outline:solid 1px}}\n"]
+    }]
+  }], () => [], null);
+})();
+
+// node_modules/@angular/material/fesm2022/_ripple-module-chunk.mjs
+var MatRippleModule = class _MatRippleModule {
+  static \u0275fac = function MatRippleModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatRippleModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _MatRippleModule,
+    imports: [MatRipple],
+    exports: [MatRipple, BidiModule]
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    imports: [BidiModule]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatRippleModule, [{
+    type: NgModule,
+    args: [{
+      imports: [MatRipple],
+      exports: [MatRipple, BidiModule]
+    }]
+  }], null, null);
+})();
+
+// node_modules/@angular/material/fesm2022/button.mjs
+var _c05 = ["matButton", ""];
+var _c14 = [[["", 8, "material-icons", 3, "iconPositionEnd", ""], ["mat-icon", 3, "iconPositionEnd", ""], ["", "matButtonIcon", "", 3, "iconPositionEnd", ""]], "*", [["", "iconPositionEnd", "", 8, "material-icons"], ["mat-icon", "iconPositionEnd", ""], ["", "matButtonIcon", "", "iconPositionEnd", ""]]];
+var _c22 = [".material-icons:not([iconPositionEnd]), mat-icon:not([iconPositionEnd]), [matButtonIcon]:not([iconPositionEnd])", "*", ".material-icons[iconPositionEnd], mat-icon[iconPositionEnd], [matButtonIcon][iconPositionEnd]"];
+var _c32 = ["mat-fab", ""];
+var _c42 = ["mat-mini-fab", ""];
+var _c52 = '.mat-mdc-fab-base{-webkit-user-select:none;user-select:none;position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:56px;height:56px;padding:0;border:none;fill:currentColor;text-decoration:none;cursor:pointer;-moz-appearance:none;-webkit-appearance:none;overflow:visible;transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1),opacity 15ms linear 30ms,transform 270ms 0ms cubic-bezier(0, 0, 0.2, 1);flex-shrink:0;-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-fab-base .mat-mdc-button-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-fab-base .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-fab-base .mdc-button__label,.mat-mdc-fab-base .mat-icon{z-index:1;position:relative}.mat-mdc-fab-base .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute}.mat-mdc-fab-base:focus>.mat-focus-indicator::before{content:""}.mat-mdc-fab-base._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-fab-base::before{position:absolute;box-sizing:border-box;width:100%;height:100%;top:0;left:0;border:1px solid rgba(0,0,0,0);border-radius:inherit;content:"";pointer-events:none}.mat-mdc-fab-base[hidden]{display:none}.mat-mdc-fab-base::-moz-focus-inner{padding:0;border:0}.mat-mdc-fab-base:active,.mat-mdc-fab-base:focus{outline:none}.mat-mdc-fab-base:hover{cursor:pointer}.mat-mdc-fab-base>svg{width:100%}.mat-mdc-fab-base .mat-icon,.mat-mdc-fab-base .material-icons{transition:transform 180ms 90ms cubic-bezier(0, 0, 0.2, 1);fill:currentColor;will-change:transform}.mat-mdc-fab-base .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 2px)*-1)}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base[disabled]:focus,.mat-mdc-fab-base.mat-mdc-button-disabled,.mat-mdc-fab-base.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-fab-base.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab{background-color:var(--mat-fab-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-container-shape, var(--mat-sys-corner-large));color:var(--mat-fab-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-fab:hover{box-shadow:var(--mat-fab-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-fab:focus{box-shadow:var(--mat-fab-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab:active,.mat-mdc-fab:focus:active{box-shadow:var(--mat-fab-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab[disabled],.mat-mdc-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-touch-target-size, 48px);display:var(--mat-fab-touch-target-display, block);left:50%;width:var(--mat-fab-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-fab .mat-ripple-element{background-color:var(--mat-fab-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-disabled-state-layer-color)}.mat-mdc-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-mini-fab{width:40px;height:40px;background-color:var(--mat-fab-small-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-small-container-shape, var(--mat-sys-corner-medium));color:var(--mat-fab-small-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-small-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-mini-fab:hover{box-shadow:var(--mat-fab-small-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-mini-fab:focus{box-shadow:var(--mat-fab-small-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab:active,.mat-mdc-mini-fab:focus:active{box-shadow:var(--mat-fab-small-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab[disabled],.mat-mdc-mini-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-small-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-small-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-mini-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-small-touch-target-size, 48px);display:var(--mat-fab-small-touch-target-display);left:50%;width:var(--mat-fab-small-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-mini-fab .mat-ripple-element{background-color:var(--mat-fab-small-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-mini-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-mini-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-disabled-state-layer-color)}.mat-mdc-mini-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-mini-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-mini-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-extended-fab{-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased;padding-left:20px;padding-right:20px;width:auto;max-width:100%;line-height:normal;box-shadow:var(--mat-fab-extended-container-elevation-shadow, var(--mat-sys-level3));height:var(--mat-fab-extended-container-height, 56px);border-radius:var(--mat-fab-extended-container-shape, var(--mat-sys-corner-large));font-family:var(--mat-fab-extended-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-fab-extended-label-text-size, var(--mat-sys-label-large-size));font-weight:var(--mat-fab-extended-label-text-weight, var(--mat-sys-label-large-weight));letter-spacing:var(--mat-fab-extended-label-text-tracking, var(--mat-sys-label-large-tracking))}@media(hover: hover){.mat-mdc-extended-fab:hover{box-shadow:var(--mat-fab-extended-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-extended-fab:focus{box-shadow:var(--mat-fab-extended-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab:active,.mat-mdc-extended-fab:focus:active{box-shadow:var(--mat-fab-extended-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab[disabled]:focus,.mat-mdc-extended-fab.mat-mdc-button-disabled,.mat-mdc-extended-fab.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-extended-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.mat-icon,[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.material-icons,.mat-mdc-extended-fab>.mat-icon,.mat-mdc-extended-fab>.material-icons{margin-left:-8px;margin-right:12px}.mat-mdc-extended-fab .mdc-button__label+.mat-icon,.mat-mdc-extended-fab .mdc-button__label+.material-icons,[dir=rtl] .mat-mdc-extended-fab>.mat-icon,[dir=rtl] .mat-mdc-extended-fab>.material-icons{margin-left:12px;margin-right:-8px}.mat-mdc-extended-fab .mat-mdc-button-touch-target{width:100%}\n';
+var APPEARANCE_CLASSES = /* @__PURE__ */ new Map([["text", ["mat-mdc-button"]], ["filled", ["mdc-button--unelevated", "mat-mdc-unelevated-button"]], ["elevated", ["mdc-button--raised", "mat-mdc-raised-button"]], ["outlined", ["mdc-button--outlined", "mat-mdc-outlined-button"]], ["tonal", ["mat-tonal-button"]]]);
+var MatButton = class _MatButton extends MatButtonBase {
+  get appearance() {
+    return this._appearance;
+  }
+  set appearance(value) {
+    this.setAppearance(value || this._config?.defaultAppearance || "text");
+  }
+  _appearance = null;
+  constructor() {
+    super();
+    const inferredAppearance = _inferAppearance(this._elementRef.nativeElement);
+    if (inferredAppearance) {
+      this.setAppearance(inferredAppearance);
+    }
+  }
+  setAppearance(appearance) {
+    if (appearance === this._appearance) {
+      return;
+    }
+    const classList = this._elementRef.nativeElement.classList;
+    const previousClasses = this._appearance ? APPEARANCE_CLASSES.get(this._appearance) : null;
+    const newClasses = APPEARANCE_CLASSES.get(appearance);
+    if ((typeof ngDevMode === "undefined" || ngDevMode) && !newClasses) {
+      throw new Error(`Unsupported MatButton appearance "${appearance}"`);
+    }
+    if (previousClasses) {
+      classList.remove(...previousClasses);
+    }
+    classList.add(...newClasses);
+    this._appearance = appearance;
+  }
+  static \u0275fac = function MatButton_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatButton)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({
+    type: _MatButton,
+    selectors: [["button", "matButton", ""], ["a", "matButton", ""], ["button", "mat-button", ""], ["button", "mat-raised-button", ""], ["button", "mat-flat-button", ""], ["button", "mat-stroked-button", ""], ["a", "mat-button", ""], ["a", "mat-raised-button", ""], ["a", "mat-flat-button", ""], ["a", "mat-stroked-button", ""]],
+    hostAttrs: [1, "mdc-button"],
+    inputs: {
+      appearance: [0, "matButton", "appearance"]
+    },
+    exportAs: ["matButton", "matAnchor"],
+    features: [\u0275\u0275InheritDefinitionFeature],
+    attrs: _c05,
+    ngContentSelectors: _c22,
+    decls: 7,
+    vars: 4,
+    consts: [[1, "mat-mdc-button-persistent-ripple"], [1, "mdc-button__label"], [1, "mat-focus-indicator"], [1, "mat-mdc-button-touch-target"]],
+    template: function MatButton_Template(rf, ctx) {
+      if (rf & 1) {
+        \u0275\u0275projectionDef(_c14);
+        \u0275\u0275domElement(0, "span", 0);
+        \u0275\u0275projection(1);
+        \u0275\u0275domElementStart(2, "span", 1);
+        \u0275\u0275projection(3, 1);
+        \u0275\u0275domElementEnd();
+        \u0275\u0275projection(4, 2);
+        \u0275\u0275domElement(5, "span", 2)(6, "span", 3);
+      }
+      if (rf & 2) {
+        \u0275\u0275classProp("mdc-button__ripple", !ctx._isFab)("mdc-fab__ripple", ctx._isFab);
+      }
+    },
+    styles: ['.mat-mdc-button-base{text-decoration:none}.mat-mdc-button-base .mat-icon{min-height:fit-content;flex-shrink:0}@media(hover: none){.mat-mdc-button-base:hover>span.mat-mdc-button-persistent-ripple::before{opacity:0}}.mdc-button{-webkit-user-select:none;user-select:none;position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:64px;border:none;outline:none;line-height:inherit;-webkit-appearance:none;overflow:visible;vertical-align:middle;background:rgba(0,0,0,0);padding:0 8px}.mdc-button::-moz-focus-inner{padding:0;border:0}.mdc-button:active{outline:none}.mdc-button:hover{cursor:pointer}.mdc-button:disabled{cursor:default;pointer-events:none}.mdc-button[hidden]{display:none}.mdc-button .mdc-button__label{position:relative}.mat-mdc-button{padding:0 var(--mat-button-text-horizontal-padding, 12px);height:var(--mat-button-text-container-height, 40px);font-family:var(--mat-button-text-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-text-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-text-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-text-label-text-transform);font-weight:var(--mat-button-text-label-text-weight, var(--mat-sys-label-large-weight))}.mat-mdc-button,.mat-mdc-button .mdc-button__ripple{border-radius:var(--mat-button-text-container-shape, var(--mat-sys-corner-full))}.mat-mdc-button:not(:disabled){color:var(--mat-button-text-label-text-color, var(--mat-sys-primary))}.mat-mdc-button[disabled],.mat-mdc-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-text-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent))}.mat-mdc-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-button:has(.material-icons,mat-icon,[matButtonIcon]){padding:0 var(--mat-button-text-with-icon-horizontal-padding, 16px)}.mat-mdc-button>.mat-icon{margin-right:var(--mat-button-text-icon-spacing, 8px);margin-left:var(--mat-button-text-icon-offset, -4px)}[dir=rtl] .mat-mdc-button>.mat-icon{margin-right:var(--mat-button-text-icon-offset, -4px);margin-left:var(--mat-button-text-icon-spacing, 8px)}.mat-mdc-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-text-icon-offset, -4px);margin-left:var(--mat-button-text-icon-spacing, 8px)}[dir=rtl] .mat-mdc-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-text-icon-spacing, 8px);margin-left:var(--mat-button-text-icon-offset, -4px)}.mat-mdc-button .mat-ripple-element{background-color:var(--mat-button-text-ripple-color, color-mix(in srgb, var(--mat-sys-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-text-state-layer-color, var(--mat-sys-primary))}.mat-mdc-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-text-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-text-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-text-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-text-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-text-touch-target-size, 48px);display:var(--mat-button-text-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-unelevated-button{transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1);height:var(--mat-button-filled-container-height, 40px);font-family:var(--mat-button-filled-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-filled-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-filled-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-filled-label-text-transform);font-weight:var(--mat-button-filled-label-text-weight, var(--mat-sys-label-large-weight));padding:0 var(--mat-button-filled-horizontal-padding, 24px)}.mat-mdc-unelevated-button>.mat-icon{margin-right:var(--mat-button-filled-icon-spacing, 8px);margin-left:var(--mat-button-filled-icon-offset, -8px)}[dir=rtl] .mat-mdc-unelevated-button>.mat-icon{margin-right:var(--mat-button-filled-icon-offset, -8px);margin-left:var(--mat-button-filled-icon-spacing, 8px)}.mat-mdc-unelevated-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-filled-icon-offset, -8px);margin-left:var(--mat-button-filled-icon-spacing, 8px)}[dir=rtl] .mat-mdc-unelevated-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-filled-icon-spacing, 8px);margin-left:var(--mat-button-filled-icon-offset, -8px)}.mat-mdc-unelevated-button .mat-ripple-element{background-color:var(--mat-button-filled-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-filled-state-layer-color, var(--mat-sys-on-primary))}.mat-mdc-unelevated-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-filled-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-unelevated-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-filled-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-unelevated-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-filled-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-unelevated-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-filled-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-unelevated-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-filled-touch-target-size, 48px);display:var(--mat-button-filled-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-unelevated-button:not(:disabled){color:var(--mat-button-filled-label-text-color, var(--mat-sys-on-primary));background-color:var(--mat-button-filled-container-color, var(--mat-sys-primary))}.mat-mdc-unelevated-button,.mat-mdc-unelevated-button .mdc-button__ripple{border-radius:var(--mat-button-filled-container-shape, var(--mat-sys-corner-full))}.mat-mdc-unelevated-button[disabled],.mat-mdc-unelevated-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-filled-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-button-filled-disabled-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-unelevated-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-raised-button{transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1);box-shadow:var(--mat-button-protected-container-elevation-shadow, var(--mat-sys-level1));height:var(--mat-button-protected-container-height, 40px);font-family:var(--mat-button-protected-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-protected-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-protected-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-protected-label-text-transform);font-weight:var(--mat-button-protected-label-text-weight, var(--mat-sys-label-large-weight));padding:0 var(--mat-button-protected-horizontal-padding, 24px)}.mat-mdc-raised-button>.mat-icon{margin-right:var(--mat-button-protected-icon-spacing, 8px);margin-left:var(--mat-button-protected-icon-offset, -8px)}[dir=rtl] .mat-mdc-raised-button>.mat-icon{margin-right:var(--mat-button-protected-icon-offset, -8px);margin-left:var(--mat-button-protected-icon-spacing, 8px)}.mat-mdc-raised-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-protected-icon-offset, -8px);margin-left:var(--mat-button-protected-icon-spacing, 8px)}[dir=rtl] .mat-mdc-raised-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-protected-icon-spacing, 8px);margin-left:var(--mat-button-protected-icon-offset, -8px)}.mat-mdc-raised-button .mat-ripple-element{background-color:var(--mat-button-protected-ripple-color, color-mix(in srgb, var(--mat-sys-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-raised-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-protected-state-layer-color, var(--mat-sys-primary))}.mat-mdc-raised-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-protected-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-raised-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-protected-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-raised-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-protected-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-raised-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-protected-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-raised-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-protected-touch-target-size, 48px);display:var(--mat-button-protected-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-raised-button:not(:disabled){color:var(--mat-button-protected-label-text-color, var(--mat-sys-primary));background-color:var(--mat-button-protected-container-color, var(--mat-sys-surface))}.mat-mdc-raised-button,.mat-mdc-raised-button .mdc-button__ripple{border-radius:var(--mat-button-protected-container-shape, var(--mat-sys-corner-full))}@media(hover: hover){.mat-mdc-raised-button:hover{box-shadow:var(--mat-button-protected-hover-container-elevation-shadow, var(--mat-sys-level2))}}.mat-mdc-raised-button:focus{box-shadow:var(--mat-button-protected-focus-container-elevation-shadow, var(--mat-sys-level1))}.mat-mdc-raised-button:active,.mat-mdc-raised-button:focus:active{box-shadow:var(--mat-button-protected-pressed-container-elevation-shadow, var(--mat-sys-level1))}.mat-mdc-raised-button[disabled],.mat-mdc-raised-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-protected-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-button-protected-disabled-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-raised-button[disabled].mat-mdc-button-disabled,.mat-mdc-raised-button.mat-mdc-button-disabled.mat-mdc-button-disabled{box-shadow:var(--mat-button-protected-disabled-container-elevation-shadow, var(--mat-sys-level0))}.mat-mdc-raised-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-outlined-button{border-style:solid;transition:border 280ms cubic-bezier(0.4, 0, 0.2, 1);height:var(--mat-button-outlined-container-height, 40px);font-family:var(--mat-button-outlined-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-outlined-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-outlined-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-outlined-label-text-transform);font-weight:var(--mat-button-outlined-label-text-weight, var(--mat-sys-label-large-weight));border-radius:var(--mat-button-outlined-container-shape, var(--mat-sys-corner-full));border-width:var(--mat-button-outlined-outline-width, 1px);padding:0 var(--mat-button-outlined-horizontal-padding, 24px)}.mat-mdc-outlined-button>.mat-icon{margin-right:var(--mat-button-outlined-icon-spacing, 8px);margin-left:var(--mat-button-outlined-icon-offset, -8px)}[dir=rtl] .mat-mdc-outlined-button>.mat-icon{margin-right:var(--mat-button-outlined-icon-offset, -8px);margin-left:var(--mat-button-outlined-icon-spacing, 8px)}.mat-mdc-outlined-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-outlined-icon-offset, -8px);margin-left:var(--mat-button-outlined-icon-spacing, 8px)}[dir=rtl] .mat-mdc-outlined-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-outlined-icon-spacing, 8px);margin-left:var(--mat-button-outlined-icon-offset, -8px)}.mat-mdc-outlined-button .mat-ripple-element{background-color:var(--mat-button-outlined-ripple-color, color-mix(in srgb, var(--mat-sys-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-outlined-state-layer-color, var(--mat-sys-primary))}.mat-mdc-outlined-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-outlined-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-outlined-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-outlined-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-outlined-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-outlined-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-outlined-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-outlined-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-outlined-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-outlined-touch-target-size, 48px);display:var(--mat-button-outlined-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-outlined-button:not(:disabled){color:var(--mat-button-outlined-label-text-color, var(--mat-sys-primary));border-color:var(--mat-button-outlined-outline-color, var(--mat-sys-outline))}.mat-mdc-outlined-button[disabled],.mat-mdc-outlined-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-outlined-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));border-color:var(--mat-button-outlined-disabled-outline-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-outlined-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-tonal-button{transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1);height:var(--mat-button-tonal-container-height, 40px);font-family:var(--mat-button-tonal-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-tonal-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-tonal-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-tonal-label-text-transform);font-weight:var(--mat-button-tonal-label-text-weight, var(--mat-sys-label-large-weight));padding:0 var(--mat-button-tonal-horizontal-padding, 24px)}.mat-tonal-button:not(:disabled){color:var(--mat-button-tonal-label-text-color, var(--mat-sys-on-secondary-container));background-color:var(--mat-button-tonal-container-color, var(--mat-sys-secondary-container))}.mat-tonal-button,.mat-tonal-button .mdc-button__ripple{border-radius:var(--mat-button-tonal-container-shape, var(--mat-sys-corner-full))}.mat-tonal-button[disabled],.mat-tonal-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-tonal-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-button-tonal-disabled-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-tonal-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-tonal-button>.mat-icon{margin-right:var(--mat-button-tonal-icon-spacing, 8px);margin-left:var(--mat-button-tonal-icon-offset, -8px)}[dir=rtl] .mat-tonal-button>.mat-icon{margin-right:var(--mat-button-tonal-icon-offset, -8px);margin-left:var(--mat-button-tonal-icon-spacing, 8px)}.mat-tonal-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-tonal-icon-offset, -8px);margin-left:var(--mat-button-tonal-icon-spacing, 8px)}[dir=rtl] .mat-tonal-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-tonal-icon-spacing, 8px);margin-left:var(--mat-button-tonal-icon-offset, -8px)}.mat-tonal-button .mat-ripple-element{background-color:var(--mat-button-tonal-ripple-color, color-mix(in srgb, var(--mat-sys-on-secondary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-tonal-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-tonal-state-layer-color, var(--mat-sys-on-secondary-container))}.mat-tonal-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-tonal-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-tonal-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-tonal-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-tonal-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-tonal-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-tonal-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-tonal-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-tonal-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-tonal-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-tonal-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-tonal-touch-target-size, 48px);display:var(--mat-button-tonal-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-button,.mat-mdc-unelevated-button,.mat-mdc-raised-button,.mat-mdc-outlined-button,.mat-tonal-button{-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-button .mat-mdc-button-ripple,.mat-mdc-button .mat-mdc-button-persistent-ripple,.mat-mdc-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button .mat-mdc-button-ripple,.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple,.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button .mat-mdc-button-ripple,.mat-mdc-raised-button .mat-mdc-button-persistent-ripple,.mat-mdc-raised-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button .mat-mdc-button-ripple,.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple,.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple::before,.mat-tonal-button .mat-mdc-button-ripple,.mat-tonal-button .mat-mdc-button-persistent-ripple,.mat-tonal-button .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-button .mat-mdc-button-ripple,.mat-mdc-unelevated-button .mat-mdc-button-ripple,.mat-mdc-raised-button .mat-mdc-button-ripple,.mat-mdc-outlined-button .mat-mdc-button-ripple,.mat-tonal-button .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple::before,.mat-tonal-button .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-button .mdc-button__label,.mat-mdc-button .mat-icon,.mat-mdc-unelevated-button .mdc-button__label,.mat-mdc-unelevated-button .mat-icon,.mat-mdc-raised-button .mdc-button__label,.mat-mdc-raised-button .mat-icon,.mat-mdc-outlined-button .mdc-button__label,.mat-mdc-outlined-button .mat-icon,.mat-tonal-button .mdc-button__label,.mat-tonal-button .mat-icon{z-index:1;position:relative}.mat-mdc-button .mat-focus-indicator,.mat-mdc-unelevated-button .mat-focus-indicator,.mat-mdc-raised-button .mat-focus-indicator,.mat-mdc-outlined-button .mat-focus-indicator,.mat-tonal-button .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute;border-radius:inherit}.mat-mdc-button:focus>.mat-focus-indicator::before,.mat-mdc-unelevated-button:focus>.mat-focus-indicator::before,.mat-mdc-raised-button:focus>.mat-focus-indicator::before,.mat-mdc-outlined-button:focus>.mat-focus-indicator::before,.mat-tonal-button:focus>.mat-focus-indicator::before{content:"";border-radius:inherit}.mat-mdc-button._mat-animation-noopable,.mat-mdc-unelevated-button._mat-animation-noopable,.mat-mdc-raised-button._mat-animation-noopable,.mat-mdc-outlined-button._mat-animation-noopable,.mat-tonal-button._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-button>.mat-icon,.mat-mdc-unelevated-button>.mat-icon,.mat-mdc-raised-button>.mat-icon,.mat-mdc-outlined-button>.mat-icon,.mat-tonal-button>.mat-icon{display:inline-block;position:relative;vertical-align:top;font-size:1.125rem;height:1.125rem;width:1.125rem}.mat-mdc-outlined-button .mat-mdc-button-ripple,.mat-mdc-outlined-button .mdc-button__ripple{top:-1px;left:-1px;bottom:-1px;right:-1px}.mat-mdc-unelevated-button .mat-focus-indicator::before,.mat-tonal-button .mat-focus-indicator::before,.mat-mdc-raised-button .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 2px)*-1)}.mat-mdc-outlined-button .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 3px)*-1)}\n', "@media(forced-colors: active){.mat-mdc-button:not(.mdc-button--outlined),.mat-mdc-unelevated-button:not(.mdc-button--outlined),.mat-mdc-raised-button:not(.mdc-button--outlined),.mat-mdc-outlined-button:not(.mdc-button--outlined),.mat-mdc-button-base.mat-tonal-button,.mat-mdc-icon-button.mat-mdc-icon-button,.mat-mdc-outlined-button .mdc-button__ripple{outline:solid 1px}}\n"],
+    encapsulation: 2,
+    changeDetection: 0
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatButton, [{
+    type: Component,
+    args: [{
+      selector: `
+    button[matButton], a[matButton], button[mat-button], button[mat-raised-button],
+    button[mat-flat-button], button[mat-stroked-button], a[mat-button], a[mat-raised-button],
+    a[mat-flat-button], a[mat-stroked-button]
+  `,
+      host: {
+        "class": "mdc-button"
+      },
+      exportAs: "matButton, matAnchor",
+      encapsulation: ViewEncapsulation.None,
+      changeDetection: ChangeDetectionStrategy.OnPush,
+      template: `<span
+    class="mat-mdc-button-persistent-ripple"
+    [class.mdc-button__ripple]="!_isFab"
+    [class.mdc-fab__ripple]="_isFab"></span>
+
+<ng-content select=".material-icons:not([iconPositionEnd]), mat-icon:not([iconPositionEnd]), [matButtonIcon]:not([iconPositionEnd])">
+</ng-content>
+
+<span class="mdc-button__label"><ng-content></ng-content></span>
+
+<ng-content select=".material-icons[iconPositionEnd], mat-icon[iconPositionEnd], [matButtonIcon][iconPositionEnd]">
+</ng-content>
+
+<!--
+  The indicator can't be directly on the button, because MDC uses ::before for high contrast
+  indication and it can't be on the ripple, because it has a border radius and overflow: hidden.
+-->
+<span class="mat-focus-indicator"></span>
+
+<span class="mat-mdc-button-touch-target"></span>
+`,
+      styles: ['.mat-mdc-button-base{text-decoration:none}.mat-mdc-button-base .mat-icon{min-height:fit-content;flex-shrink:0}@media(hover: none){.mat-mdc-button-base:hover>span.mat-mdc-button-persistent-ripple::before{opacity:0}}.mdc-button{-webkit-user-select:none;user-select:none;position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:64px;border:none;outline:none;line-height:inherit;-webkit-appearance:none;overflow:visible;vertical-align:middle;background:rgba(0,0,0,0);padding:0 8px}.mdc-button::-moz-focus-inner{padding:0;border:0}.mdc-button:active{outline:none}.mdc-button:hover{cursor:pointer}.mdc-button:disabled{cursor:default;pointer-events:none}.mdc-button[hidden]{display:none}.mdc-button .mdc-button__label{position:relative}.mat-mdc-button{padding:0 var(--mat-button-text-horizontal-padding, 12px);height:var(--mat-button-text-container-height, 40px);font-family:var(--mat-button-text-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-text-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-text-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-text-label-text-transform);font-weight:var(--mat-button-text-label-text-weight, var(--mat-sys-label-large-weight))}.mat-mdc-button,.mat-mdc-button .mdc-button__ripple{border-radius:var(--mat-button-text-container-shape, var(--mat-sys-corner-full))}.mat-mdc-button:not(:disabled){color:var(--mat-button-text-label-text-color, var(--mat-sys-primary))}.mat-mdc-button[disabled],.mat-mdc-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-text-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent))}.mat-mdc-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-button:has(.material-icons,mat-icon,[matButtonIcon]){padding:0 var(--mat-button-text-with-icon-horizontal-padding, 16px)}.mat-mdc-button>.mat-icon{margin-right:var(--mat-button-text-icon-spacing, 8px);margin-left:var(--mat-button-text-icon-offset, -4px)}[dir=rtl] .mat-mdc-button>.mat-icon{margin-right:var(--mat-button-text-icon-offset, -4px);margin-left:var(--mat-button-text-icon-spacing, 8px)}.mat-mdc-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-text-icon-offset, -4px);margin-left:var(--mat-button-text-icon-spacing, 8px)}[dir=rtl] .mat-mdc-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-text-icon-spacing, 8px);margin-left:var(--mat-button-text-icon-offset, -4px)}.mat-mdc-button .mat-ripple-element{background-color:var(--mat-button-text-ripple-color, color-mix(in srgb, var(--mat-sys-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-text-state-layer-color, var(--mat-sys-primary))}.mat-mdc-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-text-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-text-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-text-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-text-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-text-touch-target-size, 48px);display:var(--mat-button-text-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-unelevated-button{transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1);height:var(--mat-button-filled-container-height, 40px);font-family:var(--mat-button-filled-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-filled-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-filled-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-filled-label-text-transform);font-weight:var(--mat-button-filled-label-text-weight, var(--mat-sys-label-large-weight));padding:0 var(--mat-button-filled-horizontal-padding, 24px)}.mat-mdc-unelevated-button>.mat-icon{margin-right:var(--mat-button-filled-icon-spacing, 8px);margin-left:var(--mat-button-filled-icon-offset, -8px)}[dir=rtl] .mat-mdc-unelevated-button>.mat-icon{margin-right:var(--mat-button-filled-icon-offset, -8px);margin-left:var(--mat-button-filled-icon-spacing, 8px)}.mat-mdc-unelevated-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-filled-icon-offset, -8px);margin-left:var(--mat-button-filled-icon-spacing, 8px)}[dir=rtl] .mat-mdc-unelevated-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-filled-icon-spacing, 8px);margin-left:var(--mat-button-filled-icon-offset, -8px)}.mat-mdc-unelevated-button .mat-ripple-element{background-color:var(--mat-button-filled-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-filled-state-layer-color, var(--mat-sys-on-primary))}.mat-mdc-unelevated-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-filled-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-unelevated-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-filled-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-unelevated-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-filled-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-unelevated-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-filled-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-unelevated-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-filled-touch-target-size, 48px);display:var(--mat-button-filled-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-unelevated-button:not(:disabled){color:var(--mat-button-filled-label-text-color, var(--mat-sys-on-primary));background-color:var(--mat-button-filled-container-color, var(--mat-sys-primary))}.mat-mdc-unelevated-button,.mat-mdc-unelevated-button .mdc-button__ripple{border-radius:var(--mat-button-filled-container-shape, var(--mat-sys-corner-full))}.mat-mdc-unelevated-button[disabled],.mat-mdc-unelevated-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-filled-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-button-filled-disabled-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-unelevated-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-raised-button{transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1);box-shadow:var(--mat-button-protected-container-elevation-shadow, var(--mat-sys-level1));height:var(--mat-button-protected-container-height, 40px);font-family:var(--mat-button-protected-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-protected-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-protected-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-protected-label-text-transform);font-weight:var(--mat-button-protected-label-text-weight, var(--mat-sys-label-large-weight));padding:0 var(--mat-button-protected-horizontal-padding, 24px)}.mat-mdc-raised-button>.mat-icon{margin-right:var(--mat-button-protected-icon-spacing, 8px);margin-left:var(--mat-button-protected-icon-offset, -8px)}[dir=rtl] .mat-mdc-raised-button>.mat-icon{margin-right:var(--mat-button-protected-icon-offset, -8px);margin-left:var(--mat-button-protected-icon-spacing, 8px)}.mat-mdc-raised-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-protected-icon-offset, -8px);margin-left:var(--mat-button-protected-icon-spacing, 8px)}[dir=rtl] .mat-mdc-raised-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-protected-icon-spacing, 8px);margin-left:var(--mat-button-protected-icon-offset, -8px)}.mat-mdc-raised-button .mat-ripple-element{background-color:var(--mat-button-protected-ripple-color, color-mix(in srgb, var(--mat-sys-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-raised-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-protected-state-layer-color, var(--mat-sys-primary))}.mat-mdc-raised-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-protected-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-raised-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-protected-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-raised-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-protected-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-raised-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-protected-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-raised-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-protected-touch-target-size, 48px);display:var(--mat-button-protected-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-raised-button:not(:disabled){color:var(--mat-button-protected-label-text-color, var(--mat-sys-primary));background-color:var(--mat-button-protected-container-color, var(--mat-sys-surface))}.mat-mdc-raised-button,.mat-mdc-raised-button .mdc-button__ripple{border-radius:var(--mat-button-protected-container-shape, var(--mat-sys-corner-full))}@media(hover: hover){.mat-mdc-raised-button:hover{box-shadow:var(--mat-button-protected-hover-container-elevation-shadow, var(--mat-sys-level2))}}.mat-mdc-raised-button:focus{box-shadow:var(--mat-button-protected-focus-container-elevation-shadow, var(--mat-sys-level1))}.mat-mdc-raised-button:active,.mat-mdc-raised-button:focus:active{box-shadow:var(--mat-button-protected-pressed-container-elevation-shadow, var(--mat-sys-level1))}.mat-mdc-raised-button[disabled],.mat-mdc-raised-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-protected-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-button-protected-disabled-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-raised-button[disabled].mat-mdc-button-disabled,.mat-mdc-raised-button.mat-mdc-button-disabled.mat-mdc-button-disabled{box-shadow:var(--mat-button-protected-disabled-container-elevation-shadow, var(--mat-sys-level0))}.mat-mdc-raised-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-outlined-button{border-style:solid;transition:border 280ms cubic-bezier(0.4, 0, 0.2, 1);height:var(--mat-button-outlined-container-height, 40px);font-family:var(--mat-button-outlined-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-outlined-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-outlined-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-outlined-label-text-transform);font-weight:var(--mat-button-outlined-label-text-weight, var(--mat-sys-label-large-weight));border-radius:var(--mat-button-outlined-container-shape, var(--mat-sys-corner-full));border-width:var(--mat-button-outlined-outline-width, 1px);padding:0 var(--mat-button-outlined-horizontal-padding, 24px)}.mat-mdc-outlined-button>.mat-icon{margin-right:var(--mat-button-outlined-icon-spacing, 8px);margin-left:var(--mat-button-outlined-icon-offset, -8px)}[dir=rtl] .mat-mdc-outlined-button>.mat-icon{margin-right:var(--mat-button-outlined-icon-offset, -8px);margin-left:var(--mat-button-outlined-icon-spacing, 8px)}.mat-mdc-outlined-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-outlined-icon-offset, -8px);margin-left:var(--mat-button-outlined-icon-spacing, 8px)}[dir=rtl] .mat-mdc-outlined-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-outlined-icon-spacing, 8px);margin-left:var(--mat-button-outlined-icon-offset, -8px)}.mat-mdc-outlined-button .mat-ripple-element{background-color:var(--mat-button-outlined-ripple-color, color-mix(in srgb, var(--mat-sys-primary) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-outlined-state-layer-color, var(--mat-sys-primary))}.mat-mdc-outlined-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-outlined-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-mdc-outlined-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-outlined-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-outlined-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-outlined-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-outlined-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-outlined-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-outlined-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-outlined-touch-target-size, 48px);display:var(--mat-button-outlined-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-outlined-button:not(:disabled){color:var(--mat-button-outlined-label-text-color, var(--mat-sys-primary));border-color:var(--mat-button-outlined-outline-color, var(--mat-sys-outline))}.mat-mdc-outlined-button[disabled],.mat-mdc-outlined-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-outlined-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));border-color:var(--mat-button-outlined-disabled-outline-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-outlined-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-tonal-button{transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1);height:var(--mat-button-tonal-container-height, 40px);font-family:var(--mat-button-tonal-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-button-tonal-label-text-size, var(--mat-sys-label-large-size));letter-spacing:var(--mat-button-tonal-label-text-tracking, var(--mat-sys-label-large-tracking));text-transform:var(--mat-button-tonal-label-text-transform);font-weight:var(--mat-button-tonal-label-text-weight, var(--mat-sys-label-large-weight));padding:0 var(--mat-button-tonal-horizontal-padding, 24px)}.mat-tonal-button:not(:disabled){color:var(--mat-button-tonal-label-text-color, var(--mat-sys-on-secondary-container));background-color:var(--mat-button-tonal-container-color, var(--mat-sys-secondary-container))}.mat-tonal-button,.mat-tonal-button .mdc-button__ripple{border-radius:var(--mat-button-tonal-container-shape, var(--mat-sys-corner-full))}.mat-tonal-button[disabled],.mat-tonal-button.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-button-tonal-disabled-label-text-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-button-tonal-disabled-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-tonal-button.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-tonal-button>.mat-icon{margin-right:var(--mat-button-tonal-icon-spacing, 8px);margin-left:var(--mat-button-tonal-icon-offset, -8px)}[dir=rtl] .mat-tonal-button>.mat-icon{margin-right:var(--mat-button-tonal-icon-offset, -8px);margin-left:var(--mat-button-tonal-icon-spacing, 8px)}.mat-tonal-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-tonal-icon-offset, -8px);margin-left:var(--mat-button-tonal-icon-spacing, 8px)}[dir=rtl] .mat-tonal-button .mdc-button__label+.mat-icon{margin-right:var(--mat-button-tonal-icon-spacing, 8px);margin-left:var(--mat-button-tonal-icon-offset, -8px)}.mat-tonal-button .mat-ripple-element{background-color:var(--mat-button-tonal-ripple-color, color-mix(in srgb, var(--mat-sys-on-secondary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-tonal-button .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-tonal-state-layer-color, var(--mat-sys-on-secondary-container))}.mat-tonal-button.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-button-tonal-disabled-state-layer-color, var(--mat-sys-on-surface-variant))}.mat-tonal-button:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-tonal-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-tonal-button.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-tonal-button.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-tonal-button.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-tonal-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-tonal-button:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-button-tonal-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-tonal-button .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-button-tonal-touch-target-size, 48px);display:var(--mat-button-tonal-touch-target-display, block);left:0;right:0;transform:translateY(-50%)}.mat-mdc-button,.mat-mdc-unelevated-button,.mat-mdc-raised-button,.mat-mdc-outlined-button,.mat-tonal-button{-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-button .mat-mdc-button-ripple,.mat-mdc-button .mat-mdc-button-persistent-ripple,.mat-mdc-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button .mat-mdc-button-ripple,.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple,.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button .mat-mdc-button-ripple,.mat-mdc-raised-button .mat-mdc-button-persistent-ripple,.mat-mdc-raised-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button .mat-mdc-button-ripple,.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple,.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple::before,.mat-tonal-button .mat-mdc-button-ripple,.mat-tonal-button .mat-mdc-button-persistent-ripple,.mat-tonal-button .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-button .mat-mdc-button-ripple,.mat-mdc-unelevated-button .mat-mdc-button-ripple,.mat-mdc-raised-button .mat-mdc-button-ripple,.mat-mdc-outlined-button .mat-mdc-button-ripple,.mat-tonal-button .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-unelevated-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-raised-button .mat-mdc-button-persistent-ripple::before,.mat-mdc-outlined-button .mat-mdc-button-persistent-ripple::before,.mat-tonal-button .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-button .mdc-button__label,.mat-mdc-button .mat-icon,.mat-mdc-unelevated-button .mdc-button__label,.mat-mdc-unelevated-button .mat-icon,.mat-mdc-raised-button .mdc-button__label,.mat-mdc-raised-button .mat-icon,.mat-mdc-outlined-button .mdc-button__label,.mat-mdc-outlined-button .mat-icon,.mat-tonal-button .mdc-button__label,.mat-tonal-button .mat-icon{z-index:1;position:relative}.mat-mdc-button .mat-focus-indicator,.mat-mdc-unelevated-button .mat-focus-indicator,.mat-mdc-raised-button .mat-focus-indicator,.mat-mdc-outlined-button .mat-focus-indicator,.mat-tonal-button .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute;border-radius:inherit}.mat-mdc-button:focus>.mat-focus-indicator::before,.mat-mdc-unelevated-button:focus>.mat-focus-indicator::before,.mat-mdc-raised-button:focus>.mat-focus-indicator::before,.mat-mdc-outlined-button:focus>.mat-focus-indicator::before,.mat-tonal-button:focus>.mat-focus-indicator::before{content:"";border-radius:inherit}.mat-mdc-button._mat-animation-noopable,.mat-mdc-unelevated-button._mat-animation-noopable,.mat-mdc-raised-button._mat-animation-noopable,.mat-mdc-outlined-button._mat-animation-noopable,.mat-tonal-button._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-button>.mat-icon,.mat-mdc-unelevated-button>.mat-icon,.mat-mdc-raised-button>.mat-icon,.mat-mdc-outlined-button>.mat-icon,.mat-tonal-button>.mat-icon{display:inline-block;position:relative;vertical-align:top;font-size:1.125rem;height:1.125rem;width:1.125rem}.mat-mdc-outlined-button .mat-mdc-button-ripple,.mat-mdc-outlined-button .mdc-button__ripple{top:-1px;left:-1px;bottom:-1px;right:-1px}.mat-mdc-unelevated-button .mat-focus-indicator::before,.mat-tonal-button .mat-focus-indicator::before,.mat-mdc-raised-button .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 2px)*-1)}.mat-mdc-outlined-button .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 3px)*-1)}\n', "@media(forced-colors: active){.mat-mdc-button:not(.mdc-button--outlined),.mat-mdc-unelevated-button:not(.mdc-button--outlined),.mat-mdc-raised-button:not(.mdc-button--outlined),.mat-mdc-outlined-button:not(.mdc-button--outlined),.mat-mdc-button-base.mat-tonal-button,.mat-mdc-icon-button.mat-mdc-icon-button,.mat-mdc-outlined-button .mdc-button__ripple{outline:solid 1px}}\n"]
+    }]
+  }], () => [], {
+    appearance: [{
+      type: Input,
+      args: ["matButton"]
+    }]
+  });
+})();
+function _inferAppearance(button) {
+  if (button.hasAttribute("mat-raised-button")) {
+    return "elevated";
+  }
+  if (button.hasAttribute("mat-stroked-button")) {
+    return "outlined";
+  }
+  if (button.hasAttribute("mat-flat-button")) {
+    return "filled";
+  }
+  if (button.hasAttribute("mat-button")) {
+    return "text";
+  }
+  return null;
+}
+var MAT_FAB_DEFAULT_OPTIONS = new InjectionToken("mat-mdc-fab-default-options", {
+  providedIn: "root",
+  factory: () => defaults
+});
+var defaults = {
+  color: "accent"
+};
+var MatFabButton = class _MatFabButton extends MatButtonBase {
+  _options = inject2(MAT_FAB_DEFAULT_OPTIONS, {
+    optional: true
+  });
+  _isFab = true;
+  extended;
+  constructor() {
+    super();
+    this._options = this._options || defaults;
+    this.color = this._options.color || defaults.color;
+  }
+  static \u0275fac = function MatFabButton_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatFabButton)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({
+    type: _MatFabButton,
+    selectors: [["button", "mat-fab", ""], ["a", "mat-fab", ""], ["button", "matFab", ""], ["a", "matFab", ""]],
+    hostAttrs: [1, "mdc-fab", "mat-mdc-fab-base", "mat-mdc-fab"],
+    hostVars: 4,
+    hostBindings: function MatFabButton_HostBindings(rf, ctx) {
+      if (rf & 2) {
+        \u0275\u0275classProp("mdc-fab--extended", ctx.extended)("mat-mdc-extended-fab", ctx.extended);
+      }
+    },
+    inputs: {
+      extended: [2, "extended", "extended", booleanAttribute]
+    },
+    exportAs: ["matButton", "matAnchor"],
+    features: [\u0275\u0275InheritDefinitionFeature],
+    attrs: _c32,
+    ngContentSelectors: _c22,
+    decls: 7,
+    vars: 4,
+    consts: [[1, "mat-mdc-button-persistent-ripple"], [1, "mdc-button__label"], [1, "mat-focus-indicator"], [1, "mat-mdc-button-touch-target"]],
+    template: function MatFabButton_Template(rf, ctx) {
+      if (rf & 1) {
+        \u0275\u0275projectionDef(_c14);
+        \u0275\u0275domElement(0, "span", 0);
+        \u0275\u0275projection(1);
+        \u0275\u0275domElementStart(2, "span", 1);
+        \u0275\u0275projection(3, 1);
+        \u0275\u0275domElementEnd();
+        \u0275\u0275projection(4, 2);
+        \u0275\u0275domElement(5, "span", 2)(6, "span", 3);
+      }
+      if (rf & 2) {
+        \u0275\u0275classProp("mdc-button__ripple", !ctx._isFab)("mdc-fab__ripple", ctx._isFab);
+      }
+    },
+    styles: ['.mat-mdc-fab-base{-webkit-user-select:none;user-select:none;position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:56px;height:56px;padding:0;border:none;fill:currentColor;text-decoration:none;cursor:pointer;-moz-appearance:none;-webkit-appearance:none;overflow:visible;transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1),opacity 15ms linear 30ms,transform 270ms 0ms cubic-bezier(0, 0, 0.2, 1);flex-shrink:0;-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-fab-base .mat-mdc-button-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-fab-base .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-fab-base .mdc-button__label,.mat-mdc-fab-base .mat-icon{z-index:1;position:relative}.mat-mdc-fab-base .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute}.mat-mdc-fab-base:focus>.mat-focus-indicator::before{content:""}.mat-mdc-fab-base._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-fab-base::before{position:absolute;box-sizing:border-box;width:100%;height:100%;top:0;left:0;border:1px solid rgba(0,0,0,0);border-radius:inherit;content:"";pointer-events:none}.mat-mdc-fab-base[hidden]{display:none}.mat-mdc-fab-base::-moz-focus-inner{padding:0;border:0}.mat-mdc-fab-base:active,.mat-mdc-fab-base:focus{outline:none}.mat-mdc-fab-base:hover{cursor:pointer}.mat-mdc-fab-base>svg{width:100%}.mat-mdc-fab-base .mat-icon,.mat-mdc-fab-base .material-icons{transition:transform 180ms 90ms cubic-bezier(0, 0, 0.2, 1);fill:currentColor;will-change:transform}.mat-mdc-fab-base .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 2px)*-1)}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base[disabled]:focus,.mat-mdc-fab-base.mat-mdc-button-disabled,.mat-mdc-fab-base.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-fab-base.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab{background-color:var(--mat-fab-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-container-shape, var(--mat-sys-corner-large));color:var(--mat-fab-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-fab:hover{box-shadow:var(--mat-fab-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-fab:focus{box-shadow:var(--mat-fab-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab:active,.mat-mdc-fab:focus:active{box-shadow:var(--mat-fab-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab[disabled],.mat-mdc-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-touch-target-size, 48px);display:var(--mat-fab-touch-target-display, block);left:50%;width:var(--mat-fab-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-fab .mat-ripple-element{background-color:var(--mat-fab-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-disabled-state-layer-color)}.mat-mdc-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-mini-fab{width:40px;height:40px;background-color:var(--mat-fab-small-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-small-container-shape, var(--mat-sys-corner-medium));color:var(--mat-fab-small-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-small-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-mini-fab:hover{box-shadow:var(--mat-fab-small-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-mini-fab:focus{box-shadow:var(--mat-fab-small-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab:active,.mat-mdc-mini-fab:focus:active{box-shadow:var(--mat-fab-small-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab[disabled],.mat-mdc-mini-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-small-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-small-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-mini-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-small-touch-target-size, 48px);display:var(--mat-fab-small-touch-target-display);left:50%;width:var(--mat-fab-small-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-mini-fab .mat-ripple-element{background-color:var(--mat-fab-small-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-mini-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-mini-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-disabled-state-layer-color)}.mat-mdc-mini-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-mini-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-mini-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-extended-fab{-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased;padding-left:20px;padding-right:20px;width:auto;max-width:100%;line-height:normal;box-shadow:var(--mat-fab-extended-container-elevation-shadow, var(--mat-sys-level3));height:var(--mat-fab-extended-container-height, 56px);border-radius:var(--mat-fab-extended-container-shape, var(--mat-sys-corner-large));font-family:var(--mat-fab-extended-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-fab-extended-label-text-size, var(--mat-sys-label-large-size));font-weight:var(--mat-fab-extended-label-text-weight, var(--mat-sys-label-large-weight));letter-spacing:var(--mat-fab-extended-label-text-tracking, var(--mat-sys-label-large-tracking))}@media(hover: hover){.mat-mdc-extended-fab:hover{box-shadow:var(--mat-fab-extended-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-extended-fab:focus{box-shadow:var(--mat-fab-extended-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab:active,.mat-mdc-extended-fab:focus:active{box-shadow:var(--mat-fab-extended-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab[disabled]:focus,.mat-mdc-extended-fab.mat-mdc-button-disabled,.mat-mdc-extended-fab.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-extended-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.mat-icon,[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.material-icons,.mat-mdc-extended-fab>.mat-icon,.mat-mdc-extended-fab>.material-icons{margin-left:-8px;margin-right:12px}.mat-mdc-extended-fab .mdc-button__label+.mat-icon,.mat-mdc-extended-fab .mdc-button__label+.material-icons,[dir=rtl] .mat-mdc-extended-fab>.mat-icon,[dir=rtl] .mat-mdc-extended-fab>.material-icons{margin-left:12px;margin-right:-8px}.mat-mdc-extended-fab .mat-mdc-button-touch-target{width:100%}\n'],
+    encapsulation: 2,
+    changeDetection: 0
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatFabButton, [{
+    type: Component,
+    args: [{
+      selector: `button[mat-fab], a[mat-fab], button[matFab], a[matFab]`,
+      host: {
+        "class": "mdc-fab mat-mdc-fab-base mat-mdc-fab",
+        "[class.mdc-fab--extended]": "extended",
+        "[class.mat-mdc-extended-fab]": "extended"
+      },
+      exportAs: "matButton, matAnchor",
+      encapsulation: ViewEncapsulation.None,
+      changeDetection: ChangeDetectionStrategy.OnPush,
+      template: `<span
+    class="mat-mdc-button-persistent-ripple"
+    [class.mdc-button__ripple]="!_isFab"
+    [class.mdc-fab__ripple]="_isFab"></span>
+
+<ng-content select=".material-icons:not([iconPositionEnd]), mat-icon:not([iconPositionEnd]), [matButtonIcon]:not([iconPositionEnd])">
+</ng-content>
+
+<span class="mdc-button__label"><ng-content></ng-content></span>
+
+<ng-content select=".material-icons[iconPositionEnd], mat-icon[iconPositionEnd], [matButtonIcon][iconPositionEnd]">
+</ng-content>
+
+<!--
+  The indicator can't be directly on the button, because MDC uses ::before for high contrast
+  indication and it can't be on the ripple, because it has a border radius and overflow: hidden.
+-->
+<span class="mat-focus-indicator"></span>
+
+<span class="mat-mdc-button-touch-target"></span>
+`,
+      styles: ['.mat-mdc-fab-base{-webkit-user-select:none;user-select:none;position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:56px;height:56px;padding:0;border:none;fill:currentColor;text-decoration:none;cursor:pointer;-moz-appearance:none;-webkit-appearance:none;overflow:visible;transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1),opacity 15ms linear 30ms,transform 270ms 0ms cubic-bezier(0, 0, 0.2, 1);flex-shrink:0;-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-fab-base .mat-mdc-button-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-fab-base .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-fab-base .mdc-button__label,.mat-mdc-fab-base .mat-icon{z-index:1;position:relative}.mat-mdc-fab-base .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute}.mat-mdc-fab-base:focus>.mat-focus-indicator::before{content:""}.mat-mdc-fab-base._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-fab-base::before{position:absolute;box-sizing:border-box;width:100%;height:100%;top:0;left:0;border:1px solid rgba(0,0,0,0);border-radius:inherit;content:"";pointer-events:none}.mat-mdc-fab-base[hidden]{display:none}.mat-mdc-fab-base::-moz-focus-inner{padding:0;border:0}.mat-mdc-fab-base:active,.mat-mdc-fab-base:focus{outline:none}.mat-mdc-fab-base:hover{cursor:pointer}.mat-mdc-fab-base>svg{width:100%}.mat-mdc-fab-base .mat-icon,.mat-mdc-fab-base .material-icons{transition:transform 180ms 90ms cubic-bezier(0, 0, 0.2, 1);fill:currentColor;will-change:transform}.mat-mdc-fab-base .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 2px)*-1)}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base[disabled]:focus,.mat-mdc-fab-base.mat-mdc-button-disabled,.mat-mdc-fab-base.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-fab-base.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab{background-color:var(--mat-fab-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-container-shape, var(--mat-sys-corner-large));color:var(--mat-fab-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-fab:hover{box-shadow:var(--mat-fab-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-fab:focus{box-shadow:var(--mat-fab-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab:active,.mat-mdc-fab:focus:active{box-shadow:var(--mat-fab-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab[disabled],.mat-mdc-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-touch-target-size, 48px);display:var(--mat-fab-touch-target-display, block);left:50%;width:var(--mat-fab-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-fab .mat-ripple-element{background-color:var(--mat-fab-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-disabled-state-layer-color)}.mat-mdc-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-mini-fab{width:40px;height:40px;background-color:var(--mat-fab-small-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-small-container-shape, var(--mat-sys-corner-medium));color:var(--mat-fab-small-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-small-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-mini-fab:hover{box-shadow:var(--mat-fab-small-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-mini-fab:focus{box-shadow:var(--mat-fab-small-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab:active,.mat-mdc-mini-fab:focus:active{box-shadow:var(--mat-fab-small-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab[disabled],.mat-mdc-mini-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-small-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-small-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-mini-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-small-touch-target-size, 48px);display:var(--mat-fab-small-touch-target-display);left:50%;width:var(--mat-fab-small-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-mini-fab .mat-ripple-element{background-color:var(--mat-fab-small-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-mini-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-mini-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-disabled-state-layer-color)}.mat-mdc-mini-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-mini-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-mini-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-extended-fab{-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased;padding-left:20px;padding-right:20px;width:auto;max-width:100%;line-height:normal;box-shadow:var(--mat-fab-extended-container-elevation-shadow, var(--mat-sys-level3));height:var(--mat-fab-extended-container-height, 56px);border-radius:var(--mat-fab-extended-container-shape, var(--mat-sys-corner-large));font-family:var(--mat-fab-extended-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-fab-extended-label-text-size, var(--mat-sys-label-large-size));font-weight:var(--mat-fab-extended-label-text-weight, var(--mat-sys-label-large-weight));letter-spacing:var(--mat-fab-extended-label-text-tracking, var(--mat-sys-label-large-tracking))}@media(hover: hover){.mat-mdc-extended-fab:hover{box-shadow:var(--mat-fab-extended-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-extended-fab:focus{box-shadow:var(--mat-fab-extended-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab:active,.mat-mdc-extended-fab:focus:active{box-shadow:var(--mat-fab-extended-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab[disabled]:focus,.mat-mdc-extended-fab.mat-mdc-button-disabled,.mat-mdc-extended-fab.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-extended-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.mat-icon,[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.material-icons,.mat-mdc-extended-fab>.mat-icon,.mat-mdc-extended-fab>.material-icons{margin-left:-8px;margin-right:12px}.mat-mdc-extended-fab .mdc-button__label+.mat-icon,.mat-mdc-extended-fab .mdc-button__label+.material-icons,[dir=rtl] .mat-mdc-extended-fab>.mat-icon,[dir=rtl] .mat-mdc-extended-fab>.material-icons{margin-left:12px;margin-right:-8px}.mat-mdc-extended-fab .mat-mdc-button-touch-target{width:100%}\n']
+    }]
+  }], () => [], {
+    extended: [{
+      type: Input,
+      args: [{
+        transform: booleanAttribute
+      }]
+    }]
+  });
+})();
+var MatMiniFabButton = class _MatMiniFabButton extends MatButtonBase {
+  _options = inject2(MAT_FAB_DEFAULT_OPTIONS, {
+    optional: true
+  });
+  _isFab = true;
+  constructor() {
+    super();
+    this._options = this._options || defaults;
+    this.color = this._options.color || defaults.color;
+  }
+  static \u0275fac = function MatMiniFabButton_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatMiniFabButton)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({
+    type: _MatMiniFabButton,
+    selectors: [["button", "mat-mini-fab", ""], ["a", "mat-mini-fab", ""], ["button", "matMiniFab", ""], ["a", "matMiniFab", ""]],
+    hostAttrs: [1, "mdc-fab", "mat-mdc-fab-base", "mdc-fab--mini", "mat-mdc-mini-fab"],
+    exportAs: ["matButton", "matAnchor"],
+    features: [\u0275\u0275InheritDefinitionFeature],
+    attrs: _c42,
+    ngContentSelectors: _c22,
+    decls: 7,
+    vars: 4,
+    consts: [[1, "mat-mdc-button-persistent-ripple"], [1, "mdc-button__label"], [1, "mat-focus-indicator"], [1, "mat-mdc-button-touch-target"]],
+    template: function MatMiniFabButton_Template(rf, ctx) {
+      if (rf & 1) {
+        \u0275\u0275projectionDef(_c14);
+        \u0275\u0275domElement(0, "span", 0);
+        \u0275\u0275projection(1);
+        \u0275\u0275domElementStart(2, "span", 1);
+        \u0275\u0275projection(3, 1);
+        \u0275\u0275domElementEnd();
+        \u0275\u0275projection(4, 2);
+        \u0275\u0275domElement(5, "span", 2)(6, "span", 3);
+      }
+      if (rf & 2) {
+        \u0275\u0275classProp("mdc-button__ripple", !ctx._isFab)("mdc-fab__ripple", ctx._isFab);
+      }
+    },
+    styles: [_c52],
+    encapsulation: 2,
+    changeDetection: 0
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatMiniFabButton, [{
+    type: Component,
+    args: [{
+      selector: `button[mat-mini-fab], a[mat-mini-fab], button[matMiniFab], a[matMiniFab]`,
+      host: {
+        "class": "mdc-fab mat-mdc-fab-base mdc-fab--mini mat-mdc-mini-fab"
+      },
+      exportAs: "matButton, matAnchor",
+      encapsulation: ViewEncapsulation.None,
+      changeDetection: ChangeDetectionStrategy.OnPush,
+      template: `<span
+    class="mat-mdc-button-persistent-ripple"
+    [class.mdc-button__ripple]="!_isFab"
+    [class.mdc-fab__ripple]="_isFab"></span>
+
+<ng-content select=".material-icons:not([iconPositionEnd]), mat-icon:not([iconPositionEnd]), [matButtonIcon]:not([iconPositionEnd])">
+</ng-content>
+
+<span class="mdc-button__label"><ng-content></ng-content></span>
+
+<ng-content select=".material-icons[iconPositionEnd], mat-icon[iconPositionEnd], [matButtonIcon][iconPositionEnd]">
+</ng-content>
+
+<!--
+  The indicator can't be directly on the button, because MDC uses ::before for high contrast
+  indication and it can't be on the ripple, because it has a border radius and overflow: hidden.
+-->
+<span class="mat-focus-indicator"></span>
+
+<span class="mat-mdc-button-touch-target"></span>
+`,
+      styles: ['.mat-mdc-fab-base{-webkit-user-select:none;user-select:none;position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:56px;height:56px;padding:0;border:none;fill:currentColor;text-decoration:none;cursor:pointer;-moz-appearance:none;-webkit-appearance:none;overflow:visible;transition:box-shadow 280ms cubic-bezier(0.4, 0, 0.2, 1),opacity 15ms linear 30ms,transform 270ms 0ms cubic-bezier(0, 0, 0.2, 1);flex-shrink:0;-webkit-tap-highlight-color:rgba(0,0,0,0)}.mat-mdc-fab-base .mat-mdc-button-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple,.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{top:0;left:0;right:0;bottom:0;position:absolute;pointer-events:none;border-radius:inherit}.mat-mdc-fab-base .mat-mdc-button-ripple{overflow:hidden}.mat-mdc-fab-base .mat-mdc-button-persistent-ripple::before{content:"";opacity:0}.mat-mdc-fab-base .mdc-button__label,.mat-mdc-fab-base .mat-icon{z-index:1;position:relative}.mat-mdc-fab-base .mat-focus-indicator{top:0;left:0;right:0;bottom:0;position:absolute}.mat-mdc-fab-base:focus>.mat-focus-indicator::before{content:""}.mat-mdc-fab-base._mat-animation-noopable{transition:none !important;animation:none !important}.mat-mdc-fab-base::before{position:absolute;box-sizing:border-box;width:100%;height:100%;top:0;left:0;border:1px solid rgba(0,0,0,0);border-radius:inherit;content:"";pointer-events:none}.mat-mdc-fab-base[hidden]{display:none}.mat-mdc-fab-base::-moz-focus-inner{padding:0;border:0}.mat-mdc-fab-base:active,.mat-mdc-fab-base:focus{outline:none}.mat-mdc-fab-base:hover{cursor:pointer}.mat-mdc-fab-base>svg{width:100%}.mat-mdc-fab-base .mat-icon,.mat-mdc-fab-base .material-icons{transition:transform 180ms 90ms cubic-bezier(0, 0, 0.2, 1);fill:currentColor;will-change:transform}.mat-mdc-fab-base .mat-focus-indicator::before{margin:calc(calc(var(--mat-focus-indicator-border-width, 3px) + 2px)*-1)}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-fab-base[disabled],.mat-mdc-fab-base[disabled]:focus,.mat-mdc-fab-base.mat-mdc-button-disabled,.mat-mdc-fab-base.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-fab-base.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab{background-color:var(--mat-fab-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-container-shape, var(--mat-sys-corner-large));color:var(--mat-fab-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-fab:hover{box-shadow:var(--mat-fab-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-fab:focus{box-shadow:var(--mat-fab-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab:active,.mat-mdc-fab:focus:active{box-shadow:var(--mat-fab-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-fab[disabled],.mat-mdc-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-touch-target-size, 48px);display:var(--mat-fab-touch-target-display, block);left:50%;width:var(--mat-fab-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-fab .mat-ripple-element{background-color:var(--mat-fab-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-disabled-state-layer-color)}.mat-mdc-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-mini-fab{width:40px;height:40px;background-color:var(--mat-fab-small-container-color, var(--mat-sys-primary-container));border-radius:var(--mat-fab-small-container-shape, var(--mat-sys-corner-medium));color:var(--mat-fab-small-foreground-color, var(--mat-sys-on-primary-container, inherit));box-shadow:var(--mat-fab-small-container-elevation-shadow, var(--mat-sys-level3))}@media(hover: hover){.mat-mdc-mini-fab:hover{box-shadow:var(--mat-fab-small-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-mini-fab:focus{box-shadow:var(--mat-fab-small-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab:active,.mat-mdc-mini-fab:focus:active{box-shadow:var(--mat-fab-small-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-mini-fab[disabled],.mat-mdc-mini-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none;color:var(--mat-fab-small-disabled-state-foreground-color, color-mix(in srgb, var(--mat-sys-on-surface) 38%, transparent));background-color:var(--mat-fab-small-disabled-state-container-color, color-mix(in srgb, var(--mat-sys-on-surface) 12%, transparent))}.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}.mat-mdc-mini-fab .mat-mdc-button-touch-target{position:absolute;top:50%;height:var(--mat-fab-small-touch-target-size, 48px);display:var(--mat-fab-small-touch-target-display);left:50%;width:var(--mat-fab-small-touch-target-size, 48px);transform:translate(-50%, -50%)}.mat-mdc-mini-fab .mat-ripple-element{background-color:var(--mat-fab-small-ripple-color, color-mix(in srgb, var(--mat-sys-on-primary-container) calc(var(--mat-sys-pressed-state-layer-opacity) * 100%), transparent))}.mat-mdc-mini-fab .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-state-layer-color, var(--mat-sys-on-primary-container))}.mat-mdc-mini-fab.mat-mdc-button-disabled .mat-mdc-button-persistent-ripple::before{background-color:var(--mat-fab-small-disabled-state-layer-color)}.mat-mdc-mini-fab:hover>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-hover-state-layer-opacity, var(--mat-sys-hover-state-layer-opacity))}.mat-mdc-mini-fab.cdk-program-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.cdk-keyboard-focused>.mat-mdc-button-persistent-ripple::before,.mat-mdc-mini-fab.mat-mdc-button-disabled-interactive:focus>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-focus-state-layer-opacity, var(--mat-sys-focus-state-layer-opacity))}.mat-mdc-mini-fab:active>.mat-mdc-button-persistent-ripple::before{opacity:var(--mat-fab-small-pressed-state-layer-opacity, var(--mat-sys-pressed-state-layer-opacity))}.mat-mdc-extended-fab{-moz-osx-font-smoothing:grayscale;-webkit-font-smoothing:antialiased;padding-left:20px;padding-right:20px;width:auto;max-width:100%;line-height:normal;box-shadow:var(--mat-fab-extended-container-elevation-shadow, var(--mat-sys-level3));height:var(--mat-fab-extended-container-height, 56px);border-radius:var(--mat-fab-extended-container-shape, var(--mat-sys-corner-large));font-family:var(--mat-fab-extended-label-text-font, var(--mat-sys-label-large-font));font-size:var(--mat-fab-extended-label-text-size, var(--mat-sys-label-large-size));font-weight:var(--mat-fab-extended-label-text-weight, var(--mat-sys-label-large-weight));letter-spacing:var(--mat-fab-extended-label-text-tracking, var(--mat-sys-label-large-tracking))}@media(hover: hover){.mat-mdc-extended-fab:hover{box-shadow:var(--mat-fab-extended-hover-container-elevation-shadow, var(--mat-sys-level4))}}.mat-mdc-extended-fab:focus{box-shadow:var(--mat-fab-extended-focus-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab:active,.mat-mdc-extended-fab:focus:active{box-shadow:var(--mat-fab-extended-pressed-container-elevation-shadow, var(--mat-sys-level3))}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab.mat-mdc-button-disabled{cursor:default;pointer-events:none}.mat-mdc-extended-fab[disabled],.mat-mdc-extended-fab[disabled]:focus,.mat-mdc-extended-fab.mat-mdc-button-disabled,.mat-mdc-extended-fab.mat-mdc-button-disabled:focus{box-shadow:none}.mat-mdc-extended-fab.mat-mdc-button-disabled-interactive{pointer-events:auto}[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.mat-icon,[dir=rtl] .mat-mdc-extended-fab .mdc-button__label+.material-icons,.mat-mdc-extended-fab>.mat-icon,.mat-mdc-extended-fab>.material-icons{margin-left:-8px;margin-right:12px}.mat-mdc-extended-fab .mdc-button__label+.mat-icon,.mat-mdc-extended-fab .mdc-button__label+.material-icons,[dir=rtl] .mat-mdc-extended-fab>.mat-icon,[dir=rtl] .mat-mdc-extended-fab>.material-icons{margin-left:12px;margin-right:-8px}.mat-mdc-extended-fab .mat-mdc-button-touch-target{width:100%}\n']
+    }]
+  }], () => [], null);
+})();
+var MatButtonModule = class _MatButtonModule {
+  static \u0275fac = function MatButtonModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatButtonModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _MatButtonModule,
+    imports: [MatRippleModule, MatButton, MatMiniFabButton, MatIconButton, MatFabButton],
+    exports: [BidiModule, MatButton, MatMiniFabButton, MatIconButton, MatFabButton]
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    imports: [MatRippleModule, BidiModule]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatButtonModule, [{
+    type: NgModule,
+    args: [{
+      imports: [MatRippleModule, MatButton, MatMiniFabButton, MatIconButton, MatFabButton],
+      exports: [BidiModule, MatButton, MatMiniFabButton, MatIconButton, MatFabButton]
+    }]
+  }], null, null);
+})();
+
+// node_modules/@angular/material/fesm2022/toolbar.mjs
+var _c06 = ["*", [["mat-toolbar-row"]]];
+var _c15 = ["*", "mat-toolbar-row"];
+var MatToolbarRow = class _MatToolbarRow {
+  static \u0275fac = function MatToolbarRow_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatToolbarRow)();
+  };
+  static \u0275dir = /* @__PURE__ */ \u0275\u0275defineDirective({
+    type: _MatToolbarRow,
+    selectors: [["mat-toolbar-row"]],
+    hostAttrs: [1, "mat-toolbar-row"],
+    exportAs: ["matToolbarRow"]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatToolbarRow, [{
+    type: Directive,
+    args: [{
+      selector: "mat-toolbar-row",
+      exportAs: "matToolbarRow",
+      host: {
+        "class": "mat-toolbar-row"
+      }
+    }]
+  }], null, null);
+})();
+var MatToolbar = class _MatToolbar {
+  _elementRef = inject2(ElementRef);
+  _platform = inject2(Platform);
+  _document = inject2(DOCUMENT);
+  color;
+  _toolbarRows;
+  constructor() {
+  }
+  ngAfterViewInit() {
+    if (this._platform.isBrowser) {
+      this._checkToolbarMixedModes();
+      this._toolbarRows.changes.subscribe(() => this._checkToolbarMixedModes());
+    }
+  }
+  _checkToolbarMixedModes() {
+    if (this._toolbarRows.length && (typeof ngDevMode === "undefined" || ngDevMode)) {
+      const isCombinedUsage = Array.from(this._elementRef.nativeElement.childNodes).filter((node) => !(node.classList && node.classList.contains("mat-toolbar-row"))).filter((node) => node.nodeType !== (this._document ? this._document.COMMENT_NODE : 8)).some((node) => !!(node.textContent && node.textContent.trim()));
+      if (isCombinedUsage) {
+        throwToolbarMixedModesError();
+      }
+    }
+  }
+  static \u0275fac = function MatToolbar_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatToolbar)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({
+    type: _MatToolbar,
+    selectors: [["mat-toolbar"]],
+    contentQueries: function MatToolbar_ContentQueries(rf, ctx, dirIndex) {
+      if (rf & 1) {
+        \u0275\u0275contentQuery(dirIndex, MatToolbarRow, 5);
+      }
+      if (rf & 2) {
+        let _t;
+        \u0275\u0275queryRefresh(_t = \u0275\u0275loadQuery()) && (ctx._toolbarRows = _t);
+      }
+    },
+    hostAttrs: [1, "mat-toolbar"],
+    hostVars: 6,
+    hostBindings: function MatToolbar_HostBindings(rf, ctx) {
+      if (rf & 2) {
+        \u0275\u0275classMap(ctx.color ? "mat-" + ctx.color : "");
+        \u0275\u0275classProp("mat-toolbar-multiple-rows", ctx._toolbarRows.length > 0)("mat-toolbar-single-row", ctx._toolbarRows.length === 0);
+      }
+    },
+    inputs: {
+      color: "color"
+    },
+    exportAs: ["matToolbar"],
+    ngContentSelectors: _c15,
+    decls: 2,
+    vars: 0,
+    template: function MatToolbar_Template(rf, ctx) {
+      if (rf & 1) {
+        \u0275\u0275projectionDef(_c06);
+        \u0275\u0275projection(0);
+        \u0275\u0275projection(1, 1);
+      }
+    },
+    styles: [".mat-toolbar{background:var(--mat-toolbar-container-background-color, var(--mat-sys-surface));color:var(--mat-toolbar-container-text-color, var(--mat-sys-on-surface))}.mat-toolbar,.mat-toolbar h1,.mat-toolbar h2,.mat-toolbar h3,.mat-toolbar h4,.mat-toolbar h5,.mat-toolbar h6{font-family:var(--mat-toolbar-title-text-font, var(--mat-sys-title-large-font));font-size:var(--mat-toolbar-title-text-size, var(--mat-sys-title-large-size));line-height:var(--mat-toolbar-title-text-line-height, var(--mat-sys-title-large-line-height));font-weight:var(--mat-toolbar-title-text-weight, var(--mat-sys-title-large-weight));letter-spacing:var(--mat-toolbar-title-text-tracking, var(--mat-sys-title-large-tracking));margin:0}@media(forced-colors: active){.mat-toolbar{outline:solid 1px}}.mat-toolbar .mat-form-field-underline,.mat-toolbar .mat-form-field-ripple,.mat-toolbar .mat-focused .mat-form-field-ripple{background-color:currentColor}.mat-toolbar .mat-form-field-label,.mat-toolbar .mat-focused .mat-form-field-label,.mat-toolbar .mat-select-value,.mat-toolbar .mat-select-arrow,.mat-toolbar .mat-form-field.mat-focused .mat-select-arrow{color:inherit}.mat-toolbar .mat-input-element{caret-color:currentColor}.mat-toolbar .mat-mdc-button-base.mat-mdc-button-base.mat-unthemed{--mat-button-text-label-text-color: var(--mat-toolbar-container-text-color, var(--mat-sys-on-surface));--mat-button-outlined-label-text-color: var(--mat-toolbar-container-text-color, var(--mat-sys-on-surface))}.mat-toolbar-row,.mat-toolbar-single-row{display:flex;box-sizing:border-box;padding:0 16px;width:100%;flex-direction:row;align-items:center;white-space:nowrap;height:var(--mat-toolbar-standard-height, 64px)}@media(max-width: 599px){.mat-toolbar-row,.mat-toolbar-single-row{height:var(--mat-toolbar-mobile-height, 56px)}}.mat-toolbar-multiple-rows{display:flex;box-sizing:border-box;flex-direction:column;width:100%;min-height:var(--mat-toolbar-standard-height, 64px)}@media(max-width: 599px){.mat-toolbar-multiple-rows{min-height:var(--mat-toolbar-mobile-height, 56px)}}\n"],
+    encapsulation: 2,
+    changeDetection: 0
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatToolbar, [{
+    type: Component,
+    args: [{
+      selector: "mat-toolbar",
+      exportAs: "matToolbar",
+      host: {
+        "class": "mat-toolbar",
+        "[class]": 'color ? "mat-" + color : ""',
+        "[class.mat-toolbar-multiple-rows]": "_toolbarRows.length > 0",
+        "[class.mat-toolbar-single-row]": "_toolbarRows.length === 0"
+      },
+      changeDetection: ChangeDetectionStrategy.OnPush,
+      encapsulation: ViewEncapsulation.None,
+      template: '<ng-content></ng-content>\n<ng-content select="mat-toolbar-row"></ng-content>\n',
+      styles: [".mat-toolbar{background:var(--mat-toolbar-container-background-color, var(--mat-sys-surface));color:var(--mat-toolbar-container-text-color, var(--mat-sys-on-surface))}.mat-toolbar,.mat-toolbar h1,.mat-toolbar h2,.mat-toolbar h3,.mat-toolbar h4,.mat-toolbar h5,.mat-toolbar h6{font-family:var(--mat-toolbar-title-text-font, var(--mat-sys-title-large-font));font-size:var(--mat-toolbar-title-text-size, var(--mat-sys-title-large-size));line-height:var(--mat-toolbar-title-text-line-height, var(--mat-sys-title-large-line-height));font-weight:var(--mat-toolbar-title-text-weight, var(--mat-sys-title-large-weight));letter-spacing:var(--mat-toolbar-title-text-tracking, var(--mat-sys-title-large-tracking));margin:0}@media(forced-colors: active){.mat-toolbar{outline:solid 1px}}.mat-toolbar .mat-form-field-underline,.mat-toolbar .mat-form-field-ripple,.mat-toolbar .mat-focused .mat-form-field-ripple{background-color:currentColor}.mat-toolbar .mat-form-field-label,.mat-toolbar .mat-focused .mat-form-field-label,.mat-toolbar .mat-select-value,.mat-toolbar .mat-select-arrow,.mat-toolbar .mat-form-field.mat-focused .mat-select-arrow{color:inherit}.mat-toolbar .mat-input-element{caret-color:currentColor}.mat-toolbar .mat-mdc-button-base.mat-mdc-button-base.mat-unthemed{--mat-button-text-label-text-color: var(--mat-toolbar-container-text-color, var(--mat-sys-on-surface));--mat-button-outlined-label-text-color: var(--mat-toolbar-container-text-color, var(--mat-sys-on-surface))}.mat-toolbar-row,.mat-toolbar-single-row{display:flex;box-sizing:border-box;padding:0 16px;width:100%;flex-direction:row;align-items:center;white-space:nowrap;height:var(--mat-toolbar-standard-height, 64px)}@media(max-width: 599px){.mat-toolbar-row,.mat-toolbar-single-row{height:var(--mat-toolbar-mobile-height, 56px)}}.mat-toolbar-multiple-rows{display:flex;box-sizing:border-box;flex-direction:column;width:100%;min-height:var(--mat-toolbar-standard-height, 64px)}@media(max-width: 599px){.mat-toolbar-multiple-rows{min-height:var(--mat-toolbar-mobile-height, 56px)}}\n"]
+    }]
+  }], () => [], {
+    color: [{
+      type: Input
+    }],
+    _toolbarRows: [{
+      type: ContentChildren,
+      args: [MatToolbarRow, {
+        descendants: true
+      }]
+    }]
+  });
+})();
+function throwToolbarMixedModesError() {
+  throw Error("MatToolbar: Attempting to combine different toolbar modes. Either specify multiple `<mat-toolbar-row>` elements explicitly or just place content inside of a `<mat-toolbar>` for a single row.");
+}
+var MatToolbarModule = class _MatToolbarModule {
+  static \u0275fac = function MatToolbarModule_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _MatToolbarModule)();
+  };
+  static \u0275mod = /* @__PURE__ */ \u0275\u0275defineNgModule({
+    type: _MatToolbarModule,
+    imports: [MatToolbar, MatToolbarRow],
+    exports: [MatToolbar, MatToolbarRow, BidiModule]
+  });
+  static \u0275inj = /* @__PURE__ */ \u0275\u0275defineInjector({
+    imports: [BidiModule]
+  });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(MatToolbarModule, [{
+    type: NgModule,
+    args: [{
+      imports: [MatToolbar, MatToolbarRow],
+      exports: [MatToolbar, MatToolbarRow, BidiModule]
+    }]
+  }], null, null);
+})();
+
+// src/app/tab-page/tab-page.component.ts
+var TabPageComponent = class _TabPageComponent {
+  static \u0275fac = function TabPageComponent_Factory(__ngFactoryType__) {
+    return new (__ngFactoryType__ || _TabPageComponent)();
+  };
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _TabPageComponent, selectors: [["app-tab-page"]], decls: 1, vars: 0, template: function TabPageComponent_Template(rf, ctx) {
+    if (rf & 1) {
+      \u0275\u0275domElement(0, "section");
+    }
+  }, encapsulation: 2 });
+};
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(TabPageComponent, [{
+    type: Component,
+    args: [{ selector: "app-tab-page", imports: [], template: "<section>\n    \n</section>" }]
+  }], null, null);
+})();
+(() => {
+  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(TabPageComponent, { className: "TabPageComponent", filePath: "src/app/tab-page/tab-page.component.ts", lineNumber: 9 });
+})();
+
 // src/app/face-card/face-card.component.ts
 var FaceCardComponent = class _FaceCardComponent {
   imagePath;
@@ -42245,71 +46337,50 @@ var FaceCardComponent = class _FaceCardComponent {
   (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(FaceCardComponent, { className: "FaceCardComponent", filePath: "src/app/face-card/face-card.component.ts", lineNumber: 15 });
 })();
 
-// src/app/tab-page/tab-page.component.ts
-var TabPageComponent = class _TabPageComponent {
-  faceImagePath;
-  static \u0275fac = function TabPageComponent_Factory(__ngFactoryType__) {
-    return new (__ngFactoryType__ || _TabPageComponent)();
-  };
-  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _TabPageComponent, selectors: [["app-tab-page"]], inputs: { faceImagePath: "faceImagePath" }, decls: 2, vars: 1, consts: [[3, "imagePath"]], template: function TabPageComponent_Template(rf, ctx) {
-    if (rf & 1) {
-      \u0275\u0275elementStart(0, "section");
-      \u0275\u0275element(1, "app-face-card", 0);
-      \u0275\u0275elementEnd();
-    }
-    if (rf & 2) {
-      \u0275\u0275advance();
-      \u0275\u0275property("imagePath", ctx.faceImagePath);
-    }
-  }, dependencies: [FaceCardComponent], encapsulation: 2 });
-};
-(() => {
-  (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(TabPageComponent, [{
-    type: Component,
-    args: [{ selector: "app-tab-page", imports: [FaceCardComponent], template: '<section>\n    <app-face-card [imagePath]="faceImagePath"></app-face-card>\n</section>' }]
-  }], null, { faceImagePath: [{
-    type: Input
-  }] });
-})();
-(() => {
-  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(TabPageComponent, { className: "TabPageComponent", filePath: "src/app/tab-page/tab-page.component.ts", lineNumber: 10 });
-})();
-
 // src/app/app.component.ts
 var AppComponent = class _AppComponent {
   faceImagePath = "PXL_20241115_225128016.jpg";
   static \u0275fac = function AppComponent_Factory(__ngFactoryType__) {
     return new (__ngFactoryType__ || _AppComponent)();
   };
-  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _AppComponent, selectors: [["app-root"]], decls: 14, vars: 0, consts: [[1, "main"], ["label", "Software Developer"], ["faceImagePath", "PXL_20241115_225128016.jpg"], ["label", "Machine Learning Engineer"], ["label", "Game Developer"], ["label", "Artist"]], template: function AppComponent_Template(rf, ctx) {
+  static \u0275cmp = /* @__PURE__ */ \u0275\u0275defineComponent({ type: _AppComponent, selectors: [["app-root"]], decls: 23, vars: 0, consts: [[1, "main"], ["matIconButton", "", "aria-label", "Example icon-button with menu icon", 1, "example-icon"], [1, "example-spacer"], [1, "container"], [1, "sidebar"], ["imagePath", "PXL_20241115_225128016.jpg"], [1, "main-content"], ["label", "Software Developer"], ["label", "Machine Learning Engineer"], ["label", "Game Developer"], ["label", "Artist"]], template: function AppComponent_Template(rf, ctx) {
     if (rf & 1) {
-      \u0275\u0275elementStart(0, "main", 0)(1, "header")(2, "h1");
-      \u0275\u0275text(3, "Charlie Davenport");
+      \u0275\u0275elementStart(0, "main", 0)(1, "mat-toolbar")(2, "button", 1)(3, "mat-icon");
+      \u0275\u0275text(4, "menu");
       \u0275\u0275elementEnd()();
-      \u0275\u0275elementStart(4, "mat-tab-group")(5, "mat-tab", 1);
-      \u0275\u0275element(6, "app-tab-page", 2);
+      \u0275\u0275element(5, "span", 2);
+      \u0275\u0275elementStart(6, "span");
+      \u0275\u0275text(7, "Charlie Davenport");
       \u0275\u0275elementEnd();
-      \u0275\u0275elementStart(7, "mat-tab", 3);
-      \u0275\u0275element(8, "app-tab-page", 2);
+      \u0275\u0275element(8, "span", 2);
       \u0275\u0275elementEnd();
-      \u0275\u0275elementStart(9, "mat-tab", 4);
-      \u0275\u0275element(10, "app-tab-page", 2);
+      \u0275\u0275elementStart(9, "div", 3)(10, "aside", 4);
+      \u0275\u0275element(11, "app-face-card", 5);
       \u0275\u0275elementEnd();
-      \u0275\u0275elementStart(11, "mat-tab", 5);
-      \u0275\u0275element(12, "app-tab-page", 2);
-      \u0275\u0275elementEnd()()();
-      \u0275\u0275element(13, "router-outlet");
+      \u0275\u0275elementStart(12, "article", 6)(13, "mat-tab-group")(14, "mat-tab", 7);
+      \u0275\u0275element(15, "app-tab-page");
+      \u0275\u0275elementEnd();
+      \u0275\u0275elementStart(16, "mat-tab", 8);
+      \u0275\u0275element(17, "app-tab-page");
+      \u0275\u0275elementEnd();
+      \u0275\u0275elementStart(18, "mat-tab", 9);
+      \u0275\u0275element(19, "app-tab-page");
+      \u0275\u0275elementEnd();
+      \u0275\u0275elementStart(20, "mat-tab", 10);
+      \u0275\u0275element(21, "app-tab-page");
+      \u0275\u0275elementEnd()()()()();
+      \u0275\u0275element(22, "router-outlet");
     }
-  }, dependencies: [RouterOutlet, MatTabsModule, MatTab, MatTabGroup, TabPageComponent], styles: ['\n\nmain[_ngcontent-%COMP%] {\n  width: 100%;\n  min-height: 100%;\n  padding: 1rem;\n  box-sizing: inherit;\n}\nh1[_ngcontent-%COMP%] {\n  font-size: 3.125rem;\n  color: var(--gray-900);\n  font-weight: 500;\n  line-height: 100%;\n  letter-spacing: -0.125rem;\n  margin: 0;\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.subtitle[_ngcontent-%COMP%] {\n  margin: 0;\n  color: var(--gray-700);\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n/*# sourceMappingURL=app.css.map */'] });
+  }, dependencies: [RouterOutlet, MatTabsModule, MatTab, MatTabGroup, TabPageComponent, MatToolbarModule, MatToolbar, MatIconModule, MatIcon, MatButtonModule, MatIconButton, FaceCardComponent], styles: ['\n\nmain[_ngcontent-%COMP%] {\n  width: 100%;\n  min-height: 100%;\n  padding: 1rem;\n  box-sizing: inherit;\n}\nh1[_ngcontent-%COMP%] {\n  font-size: 3.125rem;\n  color: var(--gray-900);\n  font-weight: 500;\n  line-height: 100%;\n  letter-spacing: -0.125rem;\n  margin: 0;\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.subtitle[_ngcontent-%COMP%] {\n  margin: 0;\n  color: var(--gray-700);\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.sidebar[_ngcontent-%COMP%] {\n  background-color: #f4f4f4;\n  padding: 1rem;\n  position: sticky;\n  top: 0;\n  align-self: start;\n}\n.container[_ngcontent-%COMP%] {\n  display: grid;\n  grid-template-columns: 340px 1fr;\n  gap: 20px;\n  min-height: 80vh;\n}\n.main-content[_ngcontent-%COMP%] {\n  background-color: #e2e2e2;\n  padding: 1rem;\n}\n.example-spacer[_ngcontent-%COMP%] {\n  flex: 1 1 auto;\n}\n/*# sourceMappingURL=app.css.map */'] });
 };
 (() => {
   (typeof ngDevMode === "undefined" || ngDevMode) && setClassMetadata(AppComponent, [{
     type: Component,
-    args: [{ selector: "app-root", imports: [RouterOutlet, MatTabsModule, TabPageComponent], template: '<main class="main">\n  <header>\n    <h1>Charlie Davenport</h1>\n    \n  </header>\n  \n  <mat-tab-group>\n    <mat-tab label="Software Developer">\n      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>\n    </mat-tab>\n    <mat-tab label="Machine Learning Engineer">\n      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>\n    </mat-tab>\n    <mat-tab label="Game Developer">\n      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>\n    </mat-tab>\n    <mat-tab label="Artist">\n      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>\n    </mat-tab>\n  </mat-tab-group>\n\n\n</main>\n\n<router-outlet />\n', styles: ['/* src/app/app.scss */\nmain {\n  width: 100%;\n  min-height: 100%;\n  padding: 1rem;\n  box-sizing: inherit;\n}\nh1 {\n  font-size: 3.125rem;\n  color: var(--gray-900);\n  font-weight: 500;\n  line-height: 100%;\n  letter-spacing: -0.125rem;\n  margin: 0;\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.subtitle {\n  margin: 0;\n  color: var(--gray-700);\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n/*# sourceMappingURL=app.css.map */\n'] }]
+    args: [{ selector: "app-root", imports: [RouterOutlet, MatTabsModule, TabPageComponent, MatToolbarModule, MatIconModule, MatButtonModule, FaceCardComponent], template: '<main class="main">\n  <mat-toolbar>\n    <button matIconButton class="example-icon" aria-label="Example icon-button with menu icon">\n      <mat-icon>menu</mat-icon>\n    </button>\n  <span class="example-spacer"></span>\n  <span>Charlie Davenport</span>\n  <span class="example-spacer"></span>\n  </mat-toolbar>\n  \n  <!-- <header>\n    <h1>Charlie Davenport</h1>\n    \n  </header> -->\n  \n  <div class="container">\n    <aside class="sidebar">\n      <app-face-card imagePath="PXL_20241115_225128016.jpg"></app-face-card>\n    </aside>\n    <article class="main-content">\n      <mat-tab-group>\n        <mat-tab label="Software Developer">\n          <app-tab-page></app-tab-page>\n        </mat-tab>\n        <mat-tab label="Machine Learning Engineer">\n          <app-tab-page></app-tab-page>\n        </mat-tab>\n        <mat-tab label="Game Developer">\n          <app-tab-page></app-tab-page>\n        </mat-tab>\n        <mat-tab label="Artist">\n          <app-tab-page></app-tab-page>\n        </mat-tab>\n      </mat-tab-group>\n    </article>\n  </div>\n\n</main>\n\n<router-outlet />\n', styles: ['/* src/app/app.scss */\nmain {\n  width: 100%;\n  min-height: 100%;\n  padding: 1rem;\n  box-sizing: inherit;\n}\nh1 {\n  font-size: 3.125rem;\n  color: var(--gray-900);\n  font-weight: 500;\n  line-height: 100%;\n  letter-spacing: -0.125rem;\n  margin: 0;\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.subtitle {\n  margin: 0;\n  color: var(--gray-700);\n  text-align: center;\n  font-family:\n    "Inter Tight",\n    -apple-system,\n    BlinkMacSystemFont,\n    "Segoe UI",\n    Roboto,\n    Helvetica,\n    Arial,\n    sans-serif,\n    "Apple Color Emoji",\n    "Segoe UI Emoji",\n    "Segoe UI Symbol";\n}\n.sidebar {\n  background-color: #f4f4f4;\n  padding: 1rem;\n  position: sticky;\n  top: 0;\n  align-self: start;\n}\n.container {\n  display: grid;\n  grid-template-columns: 340px 1fr;\n  gap: 20px;\n  min-height: 80vh;\n}\n.main-content {\n  background-color: #e2e2e2;\n  padding: 1rem;\n}\n.example-spacer {\n  flex: 1 1 auto;\n}\n/*# sourceMappingURL=app.css.map */\n'] }]
   }], null, null);
 })();
 (() => {
-  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(AppComponent, { className: "AppComponent", filePath: "src/app/app.component.ts", lineNumber: 12 });
+  (typeof ngDevMode === "undefined" || ngDevMode) && \u0275setClassDebugInfo(AppComponent, { className: "AppComponent", filePath: "src/app/app.component.ts", lineNumber: 17 });
 })();
 
 // src/main.ts
@@ -42318,6 +46389,7 @@ bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err))
 
 @angular/core/fesm2022/_effect-chunk.mjs:
 @angular/core/fesm2022/_not_found-chunk.mjs:
+@angular/core/fesm2022/_linked_signal-chunk.mjs:
 @angular/core/fesm2022/primitives-signals.mjs:
 @angular/core/fesm2022/primitives-di.mjs:
 @angular/core/fesm2022/_untracked-chunk.mjs:
@@ -42331,6 +46403,8 @@ bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err))
 @angular/common/fesm2022/common.mjs:
 @angular/platform-browser/fesm2022/_dom_renderer-chunk.mjs:
 @angular/platform-browser/fesm2022/_browser-chunk.mjs:
+@angular/common/fesm2022/_module-chunk.mjs:
+@angular/common/fesm2022/http.mjs:
 @angular/platform-browser/fesm2022/platform-browser.mjs:
 @angular/router/fesm2022/_router-chunk.mjs:
 @angular/router/fesm2022/_router_module-chunk.mjs:
