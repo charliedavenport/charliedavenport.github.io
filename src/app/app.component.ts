@@ -1,11 +1,12 @@
-import { Component, signal } from '@angular/core';
+import { Component } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
-import { FaceCard } from "./face-card/face-card";
+import { MatTabsModule } from '@angular/material/tabs';
+import { TabPageComponent } from "./tab-page/tab-page.component";
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, FaceCard],
-  templateUrl: './app.html',
+  imports: [RouterOutlet, MatTabsModule, TabPageComponent],
+  templateUrl: './app.template.html',
   styleUrl: './app.scss'
 })
 export class AppComponent {

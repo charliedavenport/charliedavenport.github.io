@@ -1,6 +1,6 @@
-import { Component } from '@angular/core';
+import { Component, Input } from '@angular/core';
 import { NgOptimizedImage } from '@angular/common';
-import { Input } from '@angular/core';
+import {MatCardModule} from '@angular/material/card';
 
 @Component({
   selector: 'app-face-card',
@@ -12,6 +12,6 @@ import { Input } from '@angular/core';
   `,
   styleUrl: './face-card.scss',
 })
-export class FaceCard {
+export class FaceCardComponent {
   @Input() imagePath!: string;
 }
