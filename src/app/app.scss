@@ -26,3 +26,30 @@ h1 {
       Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
       "Segoe UI Symbol";
 }
+
+.sidebar {
+    background-color: #f4f4f4;
+    padding: 1rem;
+    /* Optional: make the sidebar fixed while scrolling the main content */
+    position: sticky;
+    top: 0; /* Stick to the top of the viewport when scrolling */
+    align-self: start; /* Ensures it starts at the top of the grid cell */
+}
+
+.container {
+    display: grid;
+    /* Defines two columns: one with a fixed width (e.g., 250px) 
+       and the other taking up the remaining fractional space (1fr) */
+    grid-template-columns: 340px 1fr;
+    gap: 20px; /* Adds space between the sidebar and main content */
+    min-height: 80vh; /* Ensure container spans most of the viewport height */
+}
+
+.main-content {
+    background-color: #e2e2e2;
+    padding: 1rem;
+}
+
+.example-spacer {
+  flex: 1 1 auto;
+}

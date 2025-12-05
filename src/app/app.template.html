@@ -1,24 +1,39 @@
 <main class="main">
-  <header>
+  <mat-toolbar>
+    <button matIconButton class="example-icon" aria-label="Example icon-button with menu icon">
+      <mat-icon>menu</mat-icon>
+    </button>
+  <span class="example-spacer"></span>
+  <span>Charlie Davenport</span>
+  <span class="example-spacer"></span>
+  </mat-toolbar>
+  
+  <!-- <header>
     <h1>Charlie Davenport</h1>
     
-  </header>
+  </header> -->
   
-  <mat-tab-group>
-    <mat-tab label="Software Developer">
-      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>
-    </mat-tab>
-    <mat-tab label="Machine Learning Engineer">
-      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>
-    </mat-tab>
-    <mat-tab label="Game Developer">
-      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>
-    </mat-tab>
-    <mat-tab label="Artist">
-      <app-tab-page faceImagePath="PXL_20241115_225128016.jpg"></app-tab-page>
-    </mat-tab>
-  </mat-tab-group>
-
+  <div class="container">
+    <aside class="sidebar">
+      <app-face-card imagePath="PXL_20241115_225128016.jpg"></app-face-card>
+    </aside>
+    <article class="main-content">
+      <mat-tab-group>
+        <mat-tab label="Software Developer">
+          <app-tab-page></app-tab-page>
+        </mat-tab>
+        <mat-tab label="Machine Learning Engineer">
+          <app-tab-page></app-tab-page>
+        </mat-tab>
+        <mat-tab label="Game Developer">
+          <app-tab-page></app-tab-page>
+        </mat-tab>
+        <mat-tab label="Artist">
+          <app-tab-page></app-tab-page>
+        </mat-tab>
+      </mat-tab-group>
+    </article>
+  </div>
 
 </main>
 
