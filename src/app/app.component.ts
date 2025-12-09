@@ -7,10 +7,11 @@ import { MatToolbarModule } from '@angular/material/toolbar';
 
 import { TabPageComponent } from "./tab-page/tab-page.component";
 import { FaceCardComponent } from "./face-card/face-card.component";
+import { SoftwareDevTabPageComponent } from "./software-dev-tab-page/software-dev-tab-page.component";
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, MatTabsModule, TabPageComponent, MatToolbarModule, MatIconModule, MatButtonModule, FaceCardComponent],
+  imports: [RouterOutlet, MatTabsModule, TabPageComponent, MatToolbarModule, MatIconModule, MatButtonModule, FaceCardComponent, SoftwareDevTabPageComponent],
   templateUrl: './app.template.html',
   styleUrl: './app.scss'
 })
