@@ -1,7 +1,7 @@
 main {
     width: 100%;
     min-height: 100%;
-    padding: 1rem;
+    // padding: 1rem;
     box-sizing: inherit;
 }
 
@@ -29,27 +29,45 @@ h1 {
 
 .sidebar {
     background-color: #f4f4f4;
-    padding: 1rem;
-    /* Optional: make the sidebar fixed while scrolling the main content */
     position: sticky;
-    top: 0; /* Stick to the top of the viewport when scrolling */
-    align-self: start; /* Ensures it starts at the top of the grid cell */
+    top: 60px;
+    align-self: flex-start;
 }
 
 .container {
-    display: grid;
-    /* Defines two columns: one with a fixed width (e.g., 250px) 
-       and the other taking up the remaining fractional space (1fr) */
-    grid-template-columns: 340px 1fr;
-    gap: 20px; /* Adds space between the sidebar and main content */
-    min-height: 80vh; /* Ensure container spans most of the viewport height */
+    margin-top: 60px;
+    display: flex;
 }
 
 .main-content {
     background-color: #e2e2e2;
-    padding: 1rem;
 }
 
 .example-spacer {
   flex: 1 1 auto;
+}
+
+.flex-item {
+    min-width: 0;
+    width: 100%;
+    flex-grow: 1;
+}
+
+.site-header {
+    position: fixed;
+    width: 100%;
+    height: 60px;
+    z-index: 10;
+    top: 0;
+    left: 0;
+}
+
+.tab-group {
+    position: sticky;
+    top: 60px;
+}
+
+.tab-page {
+    height: calc(100vh - 60px);
+    // overflow-y: scroll;
 }

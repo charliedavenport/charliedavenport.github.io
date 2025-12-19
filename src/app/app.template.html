@@ -1,5 +1,5 @@
 <main class="main">
-  <mat-toolbar>
+  <mat-toolbar class="site-header">
     <button matIconButton class="example-icon" aria-label="Example icon-button with menu icon">
       <mat-icon>menu</mat-icon>
     </button>
@@ -17,10 +17,10 @@
     <aside class="sidebar">
       <app-face-card imagePath="PXL_20241115_225128016.jpg"></app-face-card>
     </aside>
-    <article class="main-content">
-      <mat-tab-group>
-        <mat-tab label="Software Developer">
-          <software-dev-tab-page></software-dev-tab-page>
+    <article class="flex-item">
+      <mat-tab-group class="tab-group">
+        <mat-tab label="Software Developer" class="tab-page">
+          <software-dev-tab-page class="flex-item"></software-dev-tab-page>
         </mat-tab>
         <mat-tab label="Machine Learning Engineer">
           <app-tab-page></app-tab-page>
